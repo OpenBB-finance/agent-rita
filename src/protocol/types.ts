@@ -188,6 +188,29 @@ export interface SnowflakeSchema {
   columns: SnowflakeColumn[];
 }
 
+/** Browser DuckDB-WASM table schema advertised via widget.metadata.data_table. */
+export type ClientSqlColumnType =
+  | "VARCHAR"
+  | "DOUBLE"
+  | "BIGINT"
+  | "BOOLEAN"
+  | "DATE"
+  | "TIMESTAMP";
+
+export interface ClientDataTableColumn {
+  name: string;
+  type: ClientSqlColumnType | string;
+  label?: string;
+}
+
+export interface ClientDataTable {
+  dialect: "duckdb-wasm";
+  table_name: string;
+  description?: string;
+  row_count?: number;
+  columns: ClientDataTableColumn[];
+}
+
 export interface QueryDataSource {
   origin: string;
   id: string;

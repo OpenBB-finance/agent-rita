@@ -1,4 +1,5 @@
 import type {
+  ClientDataTable,
   QueryRequest,
   SkillCatalogEntry,
   SnowflakeSchema,
@@ -8,7 +9,7 @@ import type {
   WorkspaceState,
 } from "../protocol/types";
 import type { McpToolEntry } from "../mcp/factory";
-import { getSqlWidgets } from "../widgets/tiers";
+import { getClientSqlWidgets, getSqlWidgets } from "../widgets/tiers";
 
 const BASE_PROMPT =
   "You are Agent Rita, an open-source, model-agnostic financial agent for the OpenBB Workspace. If someone asks why Rita name was chosen, say it is an acronym for 'Research Intelligence and Task Automation'. Answer questions clearly and concisely." +
@@ -183,6 +184,55 @@ function describeSqlWidgets(
   );
 }
 
+function describeClientSqlWidgets(
+  entries: Array<{ widget: Widget; dataTable: ClientDataTable }>,
+): string {
+  if (!entries.length) return "";
+  const items = entries
+    .map(({ widget: w, dataTable: t }) => {
+      const cols = t.columns
+        .map((c) => {
+          const label = c.label && c.label !== c.name ? ` "${c.label}"` : "";
+          return `${c.name} (${c.type}${label})`;
+        })
+        .join(", ");
+      const rows = t.row_count != null ? `, ~${t.row_count} rows` : "";
+      const desc = t.description || w.description;
+      const descLine = desc ? `\n  ${desc}` : "";
+      return (
+        `- ${w.name} [uuid: ${w.uuid}] → table \`${t.table_name}\`${rows}${descLine}\n` +
+        `  Columns: ${cols}`
+      );
+    })
+    .join("\n");
+  return (
+    "\n## Client-Queryable Widgets (DuckDB in workspace)\n" +
+    "CRITICAL — these widgets already have rows in the user's browser. " +
+    "For filter / aggregate / max / min / top-N / join / sort questions over them you MUST call " +
+    "execute_client_sql with DuckDB SQL against the table_name values below. " +
+    "Do NOT call get_widget_data for these widgets first — that ships every row over the wire. " +
+    "Only use get_widget_data on them when you need the full raw payload (e.g. every row for export).\n" +
+    "Dialect: DuckDB. Joins across tables below are allowed. " +
+    "Pass widget_uuids for every table referenced in the SQL. " +
+    "Results are capped (default 500 rows); exact row_limit may mean truncated — refine/aggregate.\n" +
+    items
+  );
+}
+
+/** High-priority override placed near the top when client-sql tables exist. */
+function clientSqlPrioritySection(
+  entries: Array<{ widget: Widget; dataTable: ClientDataTable }>,
+): string {
+  if (!entries.length) return "";
+  const names = entries.map(({ dataTable: t }) => `\`${t.table_name}\``).join(", ");
+  return (
+    "\nCLIENT-SQL PRIORITY (overrides get_widget_data for listed tables):\n" +
+    `- Queryable DuckDB tables already in the browser: ${names}.\n` +
+    "- For any question answerable by filtering/aggregating those tables, call execute_client_sql first.\n" +
+    "- Do not get_widget_data + execute_sql for those widgets when execute_client_sql can answer.\n"
+  );
+}
+
 function describeDashboardContext(state: WorkspaceState): string {
   const info = state.current_dashboard_info;
   if (!info) return "";
@@ -295,6 +345,8 @@ function buildDateSection(request: QueryRequest): string {
 
 export interface PromptOptions {
   generativeUiEnabled?: boolean;
+  /** Advertise Client-Queryable Widgets + steer toward execute_client_sql. */
+  clientSqlEnabled?: boolean;
   promptSuggestionsEnabled?: boolean;
   /**
    * How the model should produce follow-up suggestions when
@@ -312,10 +364,19 @@ export function buildSystemPrompt(
   request: QueryRequest,
   options?: PromptOptions,
 ): string {
+  const primary = request.widgets?.primary ?? [];
+  const secondary = request.widgets?.secondary ?? [];
+  const extra = request.widgets?.extra ?? [];
+  const clientSqlEntries = options?.clientSqlEnabled
+    ? getClientSqlWidgets([...primary, ...secondary])
+    : [];
+
   const sections: string[] = [
     BASE_PROMPT,
+    // Place before the rest so model sees DuckDB priority before get_widget_data rules sink in.
+    clientSqlPrioritySection(clientSqlEntries),
     options?.codeExecutionAvailable ? CODE_EXECUTION_AVAILABLE_PROMPT : CODE_EXECUTION_UNAVAILABLE_PROMPT,
-  ];
+  ].filter(Boolean);
 
   const documents = request.documents ?? [];
   if (documents.length > 0) sections.push(describeUploadedDocuments(documents));
@@ -323,9 +384,6 @@ export function buildSystemPrompt(
   const catalog = request.skills_catalog ?? [];
   if (catalog.length > 0) sections.push(describeSkillsCatalog(catalog));
 
-  const primary = request.widgets?.primary ?? [];
-  const secondary = request.widgets?.secondary ?? [];
-  const extra = request.widgets?.extra ?? [];
   const hasPrimaryOrSecondary = primary.length > 0 || secondary.length > 0;
   const hasExtra = extra.length > 0;
 
@@ -350,6 +408,10 @@ export function buildSystemPrompt(
 
   const sqlWidgets = getSqlWidgets([...primary, ...secondary]);
   if (sqlWidgets.length > 0) sections.push(describeSqlWidgets(sqlWidgets));
+
+  if (clientSqlEntries.length > 0) {
+    sections.push(describeClientSqlWidgets(clientSqlEntries));
+  }
 
   const mcpToolEntries = options?.mcpToolEntries ?? [];
   if (mcpToolEntries.length > 0) sections.push(describeMcpTools(mcpToolEntries));

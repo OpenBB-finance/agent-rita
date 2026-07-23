@@ -19,6 +19,7 @@ import type {
 import {
   citationCollection,
   executeAgentTool,
+  executeClientSql,
   getSkillContent,
   getWidgetData,
   getWidgetDataSsrm,
@@ -30,7 +31,12 @@ import {
 } from "../protocol/events";
 import { makeTextSink } from "./text-sink";
 import { buildAllCitations, type CitedWidget } from "../protocol/citations";
-import { applyParamOverrides, getSqlSchema, type TieredWidget } from "../widgets/tiers";
+import {
+  applyParamOverrides,
+  getClientSqlWidgets,
+  getSqlSchema,
+  type TieredWidget,
+} from "../widgets/tiers";
 import { extractWidgetItems, type WidgetItem } from "../widgets/parse";
 import { analyzeTable, sanitizeName, sanitizeRowKeys, type TableInfo } from "../sql/loader";
 import { makeMcpTools, type McpToolsResult } from "../mcp/factory";
@@ -56,6 +62,11 @@ import {
   widgetDataSchema,
   type WidgetRequest,
 } from "./tools/widget-data";
+import {
+  CLIENT_SQL_TOOL_NAME,
+  clientSqlSchema,
+  makeClientSqlTool,
+} from "./tools/client-sql";
 import { makeGetSkillContentTool, getSkillContentSchema } from "./tools/skills";
 import { makeWorkspaceTools } from "./tools/workspace";
 import {
@@ -352,6 +363,8 @@ export interface AgentRunOptions {
   tieredWidgets?: TieredWidget[];
   workspaceState: WorkspaceState | null;
   generativeUiEnabled: boolean;
+  /** Browser DuckDB-WASM: workspace_options["client-sql"] + queryable widgets. */
+  clientSqlEnabled?: boolean;
   /**
    * Per-chat identifier from the workspace's X-Trace-Id header. Threaded
    * into compute MCP calls (via decoration) so the rita-tools MCP server
@@ -465,6 +478,7 @@ export async function* runAgentLoop(options: AgentRunOptions): AsyncGenerator<SS
     allWidgets,
     workspaceState,
     generativeUiEnabled,
+    clientSqlEnabled = false,
     promptSuggestionsEnabled = false,
     suggestionsVia = "inline",
     conversationId,
@@ -475,6 +489,17 @@ export async function* runAgentLoop(options: AgentRunOptions): AsyncGenerator<SS
   const lastMessage = request.messages.at(-1);
   const isRebootToolTurn = lastMessage?.role === "tool";
   const hasWidgets = allWidgets.length > 0;
+  const clientSqlWidgets = clientSqlEnabled
+    ? getClientSqlWidgets([...request.widgets?.primary ?? [], ...request.widgets?.secondary ?? []])
+    : [];
+  const clientSqlToolEnabled = clientSqlEnabled && clientSqlWidgets.length > 0;
+  logger.info("Client SQL gate", {
+    clientSqlEnabled,
+    queryableTables: clientSqlWidgets.map(({ dataTable }) => dataTable.table_name),
+    toolEnabled: clientSqlToolEnabled,
+    primaryCount: request.widgets?.primary?.length ?? 0,
+    secondaryCount: request.widgets?.secondary?.length ?? 0,
+  });
   const dashboardNameByUuid = buildDashboardNameByUuid(workspaceState);
   const agentTools = (request.tools ?? []) as AgentTool[];
   const mcpToolsResult: McpToolsResult | null = agentTools.length > 0 ? makeMcpTools(agentTools) : null;
@@ -557,6 +582,7 @@ export async function* runAgentLoop(options: AgentRunOptions): AsyncGenerator<SS
   try {
     const messages = buildMessages(request, {
       generativeUiEnabled,
+      clientSqlEnabled: clientSqlToolEnabled,
       promptSuggestionsEnabled,
       suggestionsVia,
       workspaceState,
@@ -933,6 +959,7 @@ export async function* runAgentLoop(options: AgentRunOptions): AsyncGenerator<SS
         ...sqlToolSet,
         ...nativeToolSet,
         ...(widgetDataToolEnabled && { get_widget_data: makeWidgetDataTool() }),
+        ...(clientSqlToolEnabled && { [CLIENT_SQL_TOOL_NAME]: makeClientSqlTool() }),
         ...(hasSkillsCatalog && { get_skill_content: makeGetSkillContentTool() }),
         ...(suggestionsVia === "tool" &&
           promptSuggestionsEnabled && {
@@ -955,6 +982,7 @@ export async function* runAgentLoop(options: AgentRunOptions): AsyncGenerator<SS
         tools,
         stopWhen: [
           ...(widgetDataToolEnabled ? [hasToolCall("get_widget_data")] : []),
+          ...(clientSqlToolEnabled ? [hasToolCall(CLIENT_SQL_TOOL_NAME)] : []),
           hasToolCall("get_skill_content"),
           ...(workspaceToolSet
             ? Array.from(OPENBB_AI_SSE_BRIDGE_COMMANDS).map((name) => hasToolCall(name))
@@ -1444,6 +1472,46 @@ export async function* runAgentLoop(options: AgentRunOptions): AsyncGenerator<SS
         for (const ev of sink.flushTail()) yield ev;
         yield* emitPendingArtifactsBeforeExit();
         yield getSkillContent(slug, reason, await buildContinuationExtraState());
+        return;
+      }
+
+      // --- Client SQL round-trip (browser DuckDB-WASM) ---
+      // One emission only (batch of up to 5 queries) — same invariant as bridge ops.
+      const clientSqlCall = clientSqlToolEnabled
+        ? lastStep?.toolCalls.find((tc) => tc.toolName === CLIENT_SQL_TOOL_NAME)
+        : undefined;
+      if (clientSqlCall) {
+        const parsed = clientSqlSchema.safeParse(clientSqlCall.input);
+        if (!parsed.success) {
+          const issue = parsed.error.issues[0];
+          const issuePath = issue.path.join(".") || "(root)";
+          const errMsg = `execute_client_sql arguments invalid at ${issuePath}: ${issue.message}.`;
+          logger.warn(`execute_client_sql input rejected by schema: ${errMsg}`);
+          const status = formatToolInputRejectedStatus(
+            CLIENT_SQL_TOOL_NAME,
+            clientSqlCall.input,
+            issue.message,
+          );
+          yield reasoningStep(status.message, status.eventType ?? "WARNING", status.details);
+          yield messageChunk(errMsg);
+          return;
+        }
+        const { queries } = parsed.data;
+        for (const ev of sink.flushTail()) yield ev;
+        yield* emitPendingArtifactsBeforeExit();
+        yield reasoningStep(
+          `Running ${queries.length} client SQL quer${queries.length === 1 ? "y" : "ies"}`,
+          "INFO",
+          { phase: "input", tool_name: CLIENT_SQL_TOOL_NAME, query_count: queries.length },
+        );
+        yield executeClientSql(
+          queries.map((q) => ({
+            sql: q.sql,
+            widget_uuids: q.widget_uuids,
+            ...(q.row_limit != null ? { row_limit: q.row_limit } : {}),
+          })),
+          await buildContinuationExtraState(),
+        );
         return;
       }
 

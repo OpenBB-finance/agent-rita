@@ -212,6 +212,33 @@ const SSRM_DEFAULTS = {
   sortModel: [],
 };
 
+/**
+ * Emit execute_client_sql for browser DuckDB-WASM execution.
+ * `queries` shape matches the tool schema and terminalpro handler.
+ */
+export function executeClientSql(
+  queries: Array<{
+    sql: string;
+    widget_uuids: string[];
+    row_limit?: number;
+  }>,
+  extraState?: Record<string, unknown>,
+): SSEEvent {
+  return {
+    event: "copilotFunctionCall",
+    data: {
+      function: "execute_client_sql",
+      input_arguments: { queries },
+      extra_state: {
+        copilot_function_call_arguments: {
+          summary: `Run ${queries.length} client SQL quer${queries.length === 1 ? "y" : "ies"}`,
+        },
+        ...(extraState ?? {}),
+      },
+    },
+  };
+}
+
 export function getWidgetDataSsrm(
   widget: Widget,
   sql: string,

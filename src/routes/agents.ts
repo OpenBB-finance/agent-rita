@@ -47,6 +47,7 @@ agentsRouter.get("/agents.json", (c) => {
           default: true,
           description: "Show follow-up prompt suggestions after each response.",
         },
+        "client-sql": true,
         "model": {
           label: "Model",
           type: "select",
