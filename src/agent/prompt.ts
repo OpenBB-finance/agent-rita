@@ -233,6 +233,26 @@ function clientSqlPrioritySection(
   );
 }
 
+/**
+ * Sits with the other priority blocks at the top. Without it, TOOL PRIORITY
+ * step 1 ("search_widgets … then get_widget_data") wins for connected widgets
+ * and every row gets shipped over the wire. Rendered only when the user has
+ * Client-side SQL on and global widget access is available.
+ */
+function prepareClientSqlPrioritySection(enabled: boolean): string {
+  if (!enabled) return "";
+  return (
+    "\nCONNECTED-WIDGET SQL (overrides TOOL PRIORITY step 1 for aggregate questions):\n" +
+    "- For a widget that is NOT on the dashboard, when the question needs filtering, aggregation, " +
+    "top-N, sorting or a join: call search_widgets to find it, then prepare_client_sql_tables to load " +
+    "it into the browser DuckDB, then execute_client_sql against the table_name it returns.\n" +
+    "- Do NOT reach for get_widget_data on those questions — it ships every row over the wire. " +
+    "Use it only when you genuinely need the full raw payload.\n" +
+    "- prepare_client_sql_tables takes widget_id + origin from search_widgets, plus input_args for " +
+    "every param the widget declares.\n"
+  );
+}
+
 function describeDashboardContext(state: WorkspaceState): string {
   const info = state.current_dashboard_info;
   if (!info) return "";
@@ -347,6 +367,8 @@ export interface PromptOptions {
   generativeUiEnabled?: boolean;
   /** Advertise Client-Queryable Widgets + steer toward execute_client_sql. */
   clientSqlEnabled?: boolean;
+  /** prepare_client_sql_tables is registered — connected widgets can be loaded on demand. */
+  prepareClientSqlEnabled?: boolean;
   promptSuggestionsEnabled?: boolean;
   /**
    * How the model should produce follow-up suggestions when
@@ -375,6 +397,7 @@ export function buildSystemPrompt(
     BASE_PROMPT,
     // Place before the rest so model sees DuckDB priority before get_widget_data rules sink in.
     clientSqlPrioritySection(clientSqlEntries),
+    prepareClientSqlPrioritySection(Boolean(options?.prepareClientSqlEnabled)),
     options?.codeExecutionAvailable ? CODE_EXECUTION_AVAILABLE_PROMPT : CODE_EXECUTION_UNAVAILABLE_PROMPT,
   ].filter(Boolean);
 
@@ -396,8 +419,16 @@ export function buildSystemPrompt(
       );
     }
     if (hasExtra) {
+      // The workspace strips option lists / long descriptions from `extra` at
+      // scale, so the model must not read absence of detail as absence of params.
+      const slimNote = options?.workspaceState?.extra_widgets_slim
+        ? " Their descriptions and parameter details are abbreviated here — never conclude from this list that a widget has no parameters or options; fetch details when you need them."
+        : "";
+      const prepareNote = options?.prepareClientSqlEnabled
+        ? " To filter, aggregate, or join one of them, call prepare_client_sql_tables to load it into DuckDB, then execute_client_sql against the table it returns."
+        : "";
       parts.push(
-        `\nOther connected widgets — ${extra.length} additional in the user's account but not on the current dashboard. Use search_widgets to discover.`,
+        `\nOther connected widgets — ${extra.length} additional in the user's account but not on the current dashboard. Use search_widgets to discover.${slimNote}${prepareNote}`,
       );
     }
     const counts = `${primary.length} added to context, ${secondary.length} on dashboard, ${extra.length} connected`;

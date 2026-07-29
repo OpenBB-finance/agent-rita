@@ -7,7 +7,10 @@ import {
 } from "../protocol/bridge-commands";
 import { SQL_TOOL_NAME_SET } from "../agent/tools/sql";
 import { NATIVE_TOOL_NAME_SET } from "../agent/tools/native";
-import { CLIENT_SQL_TOOL_NAME } from "../agent/tools/client-sql";
+import {
+  CLIENT_SQL_TOOL_NAME,
+  PREPARE_CLIENT_SQL_TOOL_NAME,
+} from "../agent/tools/client-sql";
 
 export interface McpToolEntry {
   serverId: string;
@@ -40,7 +43,10 @@ function endsWithCanonical(toolName: string, canonical: ReadonlySet<string>): bo
   return false;
 }
 
-const CLIENT_SQL_NAME_SET: ReadonlySet<string> = new Set([CLIENT_SQL_TOOL_NAME]);
+const CLIENT_SQL_NAME_SET: ReadonlySet<string> = new Set([
+  CLIENT_SQL_TOOL_NAME,
+  PREPARE_CLIENT_SQL_TOOL_NAME,
+]);
 
 function isAgentOwnedTool(toolName: string): boolean {
   return (

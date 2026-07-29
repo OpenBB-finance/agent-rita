@@ -24,6 +24,7 @@ import {
   getWidgetData,
   getWidgetDataSsrm,
   messageChunk,
+  prepareClientSqlTables,
   promptSuggestions,
   reasoningStep,
   streamingMessageChunk,
@@ -66,6 +67,9 @@ import {
   CLIENT_SQL_TOOL_NAME,
   clientSqlSchema,
   makeClientSqlTool,
+  makePrepareClientSqlTool,
+  PREPARE_CLIENT_SQL_TOOL_NAME,
+  prepareClientSqlSchema,
 } from "./tools/client-sql";
 import { makeGetSkillContentTool, getSkillContentSchema } from "./tools/skills";
 import { makeWorkspaceTools } from "./tools/workspace";
@@ -366,6 +370,11 @@ export interface AgentRunOptions {
   /** Browser DuckDB-WASM: workspace_options["client-sql"] + queryable widgets. */
   clientSqlEnabled?: boolean;
   /**
+   * workspace_options["widget-global-search"] — the user opted into the agent
+   * reaching widgets that are connected but not on the current dashboard.
+   */
+  globalSearchEnabled?: boolean;
+  /**
    * Per-chat identifier from the workspace's X-Trace-Id header. Threaded
    * into compute MCP calls (via decoration) so the rita-tools MCP server
    * keeps a single Daytona sandbox per chat.
@@ -479,6 +488,7 @@ export async function* runAgentLoop(options: AgentRunOptions): AsyncGenerator<SS
     workspaceState,
     generativeUiEnabled,
     clientSqlEnabled = false,
+    globalSearchEnabled = false,
     promptSuggestionsEnabled = false,
     suggestionsVia = "inline",
     conversationId,
@@ -492,14 +502,22 @@ export async function* runAgentLoop(options: AgentRunOptions): AsyncGenerator<SS
   const clientSqlWidgets = clientSqlEnabled
     ? getClientSqlWidgets([...request.widgets?.primary ?? [], ...request.widgets?.secondary ?? []])
     : [];
-  const clientSqlToolEnabled = clientSqlEnabled && clientSqlWidgets.length > 0;
-  logger.info("Client SQL gate", {
-    clientSqlEnabled,
-    queryableTables: clientSqlWidgets.map(({ dataTable }) => dataTable.table_name),
-    toolEnabled: clientSqlToolEnabled,
-    primaryCount: request.widgets?.primary?.length ?? 0,
-    secondaryCount: request.widgets?.secondary?.length ?? 0,
-  });
+  // Connected widgets have no rows in the browser, so they can only be queried
+  // after a prepare round-trip. Gated on global search: without it the user has
+  // not opted into the agent reaching past the current dashboard.
+  const prepareClientSqlToolEnabled =
+    clientSqlEnabled && globalSearchEnabled && (request.widgets?.extra?.length ?? 0) > 0;
+  // Also registered whenever prepare is available: a prepared widget creates a
+  // browser table on a later turn, and dashboard widgets alone would leave the
+  // model able to CREATE tables it has no tool to query.
+  const clientSqlToolEnabled =
+    clientSqlEnabled && (clientSqlWidgets.length > 0 || prepareClientSqlToolEnabled);
+  logger.info(
+    `Client SQL gate clientSql=${clientSqlEnabled} globalSearch=${globalSearchEnabled} ` +
+      `sqlTool=${clientSqlToolEnabled} prepareTool=${prepareClientSqlToolEnabled} ` +
+      `tiers=${request.widgets?.primary?.length ?? 0}/${request.widgets?.secondary?.length ?? 0}/${request.widgets?.extra?.length ?? 0} ` +
+      `tables=[${clientSqlWidgets.map(({ dataTable }) => dataTable.table_name).join(",")}]`,
+  );
   const dashboardNameByUuid = buildDashboardNameByUuid(workspaceState);
   const agentTools = (request.tools ?? []) as AgentTool[];
   const mcpToolsResult: McpToolsResult | null = agentTools.length > 0 ? makeMcpTools(agentTools) : null;
@@ -583,6 +601,7 @@ export async function* runAgentLoop(options: AgentRunOptions): AsyncGenerator<SS
     const messages = buildMessages(request, {
       generativeUiEnabled,
       clientSqlEnabled: clientSqlToolEnabled,
+      prepareClientSqlEnabled: prepareClientSqlToolEnabled,
       promptSuggestionsEnabled,
       suggestionsVia,
       workspaceState,
@@ -884,7 +903,9 @@ export async function* runAgentLoop(options: AgentRunOptions): AsyncGenerator<SS
     let totalStepCount = 0;
     let loopCount = 0;
     let suppressWidgetDataToolForCachedRetry = false;
-    const searchTool = makeSearchWidgetsTool(tieredWidgets);
+    const searchTool = makeSearchWidgetsTool(tieredWidgets, {
+      prepareClientSqlEnabled: prepareClientSqlToolEnabled,
+    });
     const createAppTool = makeCreateAppTool({ allWidgets, artifactQueue });
 
     for (let loopIdx = 0; loopIdx < MAX_LOOPS; loopIdx++) {
@@ -960,6 +981,9 @@ export async function* runAgentLoop(options: AgentRunOptions): AsyncGenerator<SS
         ...nativeToolSet,
         ...(widgetDataToolEnabled && { get_widget_data: makeWidgetDataTool() }),
         ...(clientSqlToolEnabled && { [CLIENT_SQL_TOOL_NAME]: makeClientSqlTool() }),
+        ...(prepareClientSqlToolEnabled && {
+          [PREPARE_CLIENT_SQL_TOOL_NAME]: makePrepareClientSqlTool(),
+        }),
         ...(hasSkillsCatalog && { get_skill_content: makeGetSkillContentTool() }),
         ...(suggestionsVia === "tool" &&
           promptSuggestionsEnabled && {
@@ -983,6 +1007,9 @@ export async function* runAgentLoop(options: AgentRunOptions): AsyncGenerator<SS
         stopWhen: [
           ...(widgetDataToolEnabled ? [hasToolCall("get_widget_data")] : []),
           ...(clientSqlToolEnabled ? [hasToolCall(CLIENT_SQL_TOOL_NAME)] : []),
+          ...(prepareClientSqlToolEnabled
+            ? [hasToolCall(PREPARE_CLIENT_SQL_TOOL_NAME)]
+            : []),
           hasToolCall("get_skill_content"),
           ...(workspaceToolSet
             ? Array.from(OPENBB_AI_SSE_BRIDGE_COMMANDS).map((name) => hasToolCall(name))
@@ -1472,6 +1499,44 @@ export async function* runAgentLoop(options: AgentRunOptions): AsyncGenerator<SS
         for (const ev of sink.flushTail()) yield ev;
         yield* emitPendingArtifactsBeforeExit();
         yield getSkillContent(slug, reason, await buildContinuationExtraState());
+        return;
+      }
+
+      // --- Prepare client SQL tables (load a connected widget into DuckDB) ---
+      // Runs before the SQL dispatch: the model must learn a table's real schema
+      // before it can write SQL against it.
+      const prepareClientSqlCall = prepareClientSqlToolEnabled
+        ? lastStep?.toolCalls.find((tc) => tc.toolName === PREPARE_CLIENT_SQL_TOOL_NAME)
+        : undefined;
+      if (prepareClientSqlCall) {
+        const parsed = prepareClientSqlSchema.safeParse(prepareClientSqlCall.input);
+        if (!parsed.success) {
+          const issue = parsed.error.issues[0];
+          const issuePath = issue.path.join(".") || "(root)";
+          const errMsg = `prepare_client_sql_tables arguments invalid at ${issuePath}: ${issue.message}.`;
+          logger.warn(`prepare_client_sql_tables input rejected by schema: ${errMsg}`);
+          const status = formatToolInputRejectedStatus(
+            PREPARE_CLIENT_SQL_TOOL_NAME,
+            prepareClientSqlCall.input,
+            issue.message,
+          );
+          yield reasoningStep(status.message, status.eventType ?? "WARNING", status.details);
+          yield messageChunk(errMsg);
+          return;
+        }
+        const { widgets: toPrepare } = parsed.data;
+        for (const ev of sink.flushTail()) yield ev;
+        yield* emitPendingArtifactsBeforeExit();
+        yield reasoningStep(
+          `Loading ${toPrepare.length} widget${toPrepare.length === 1 ? "" : "s"} into DuckDB`,
+          "INFO",
+          {
+            phase: "input",
+            tool_name: PREPARE_CLIENT_SQL_TOOL_NAME,
+            widget_count: toPrepare.length,
+          },
+        );
+        yield prepareClientSqlTables(toPrepare, await buildContinuationExtraState());
         return;
       }
 

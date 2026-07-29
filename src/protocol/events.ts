@@ -239,6 +239,34 @@ export function executeClientSql(
   };
 }
 
+/**
+ * Emit prepare_client_sql_tables — workspace fetches the widgets, registers them
+ * in DuckDB, and returns the resulting table schemas.
+ */
+export function prepareClientSqlTables(
+  widgets: Array<{
+    widget_uuid?: string;
+    widget_id?: string;
+    origin?: string;
+    input_args?: Record<string, unknown>;
+  }>,
+  extraState?: Record<string, unknown>,
+): SSEEvent {
+  return {
+    event: "copilotFunctionCall",
+    data: {
+      function: "prepare_client_sql_tables",
+      input_arguments: { widgets },
+      extra_state: {
+        copilot_function_call_arguments: {
+          summary: `Load ${widgets.length} widget${widgets.length === 1 ? "" : "s"} into DuckDB`,
+        },
+        ...(extraState ?? {}),
+      },
+    },
+  };
+}
+
 export function getWidgetDataSsrm(
   widget: Widget,
   sql: string,

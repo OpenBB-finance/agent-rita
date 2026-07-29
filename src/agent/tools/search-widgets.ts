@@ -38,7 +38,18 @@ function widgetKind(w: Widget): "data" | "note" | "display" {
 
 export function makeSearchWidgetsTool(
   tiered: TieredWidget[],
+  options?: { prepareClientSqlEnabled?: boolean },
 ) {
+  const prepareClientSqlEnabled = Boolean(options?.prepareClientSqlEnabled);
+  // The model decides what to do with a match immediately after reading this
+  // description, so the routing rule has to live here — a system-prompt section
+  // thousands of characters away loses to "pass uuid verbatim to get_widget_data".
+  const clientSqlRouting = prepareClientSqlEnabled
+    ? " ROUTING for `location: 'connected'` matches: if the question needs filtering, aggregation, top-N, sorting or a join, " +
+      "do NOT call get_widget_data — call prepare_client_sql_tables with that match's `widget_id` + `origin` (plus input_args " +
+      "for its params), then execute_client_sql against the table it returns. get_widget_data on a connected widget ships every " +
+      "row over the wire; use it only when you need the full raw payload."
+    : "";
   return tool({
     description:
       `Search for widgets in the user's workspace. Returns up to ${SEARCH_RESULT_CAP} matches plus the total count, ` +
@@ -52,7 +63,8 @@ export function makeSearchWidgetsTool(
       "Results rank by relevance, then by location (added_to_context > on_dashboard > connected). " +
       "When describing widgets to the user, use these plain phrases — never the words 'primary', 'secondary', 'extra', or 'tier'. " +
       "Prefer 'data' for actual numbers. If both data and note widgets match, ask which the user wants. " +
-      "Empty query lists all connected widgets, with widgets added to context first.",
+      "Empty query lists all connected widgets, with widgets added to context first." +
+      clientSqlRouting,
     inputSchema: searchWidgetsSchema,
     execute: async ({ query }) => {
       const matches = searchWidgets(tiered, query);
@@ -71,9 +83,22 @@ export function makeSearchWidgetsTool(
                 `${p.name}:${p.type}=${p.current_value ?? p.default_value ?? "REQUIRED"}`,
             )
           : undefined,
+        // Carried on the row itself so the routing rule is in front of the model
+        // at the moment it picks the next tool, not only in the tool description.
+        ...(prepareClientSqlEnabled && tier === "extra" && widgetKind(w) === "data"
+          ? { sql_ready: "prepare_client_sql_tables" as const }
+          : {}),
       }));
       logger.info("Widget search", { query, results: results.length, total: matches.length });
-      return { matches: results, total: matches.length };
+      return {
+        matches: results,
+        total: matches.length,
+        ...(prepareClientSqlEnabled
+          ? {
+              note: "Matches tagged sql_ready are not on the dashboard. For filter/aggregate/top-N/sort/join questions load them with prepare_client_sql_tables and query with execute_client_sql instead of get_widget_data.",
+            }
+          : {}),
+      };
     },
   });
 }
