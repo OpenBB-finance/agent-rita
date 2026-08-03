@@ -72,6 +72,7 @@ import {
   estimateCost,
 } from "../lib/token-usage";
 import { getLogger } from "../lib/logger";
+import { PROVIDER_OPTIONS } from "../lib/providers";
 
 const logger = getLogger(["app", "agent", "loop"]);
 
@@ -962,6 +963,7 @@ export async function* runAgentLoop(options: AgentRunOptions): AsyncGenerator<SS
           ...(mcpToolsResult ? [mcpToolsResult.stopCondition] : []),
           stepCountIs(15),
         ],
+        providerOptions: PROVIDER_OPTIONS,
         abortSignal: AbortSignal.timeout(LLM_STREAM_TIMEOUT_MS),
         onError: ({ error }) => logger.error("streamText error part", { loopIdx, error }),
       });

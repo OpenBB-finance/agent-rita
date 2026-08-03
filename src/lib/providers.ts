@@ -1,7 +1,7 @@
 import { createGroq } from "@ai-sdk/groq";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
-import type { LanguageModel } from "ai";
+import type { JSONValue, LanguageModel } from "ai";
 import { createOllama } from "ollama-ai-provider-v2";
 import { getLogger } from "./logger";
 
@@ -17,6 +17,22 @@ interface ProviderEntry {
 }
 
 const providers: ProviderEntry[] = [];
+
+/**
+ * Provider options sent with every model call.
+ *
+ * OpenAI's Responses API stores reasoning items server-side and lets a
+ * follow-up request cite them by id. This harness rebuilds the whole message
+ * list on each turn and never sends `previousResponseId`, so that storage buys
+ * nothing — and it breaks outright for Zero Data Retention organizations,
+ * where the items are discarded immediately and the next tool round-trip fails
+ * with "Item with id 'rs_...' not found". Opting out of storage and carrying
+ * the reasoning inline as encrypted content keeps multi-step tool turns
+ * working on every account type. Non-OpenAI providers ignore this key.
+ */
+export const PROVIDER_OPTIONS: Record<string, Record<string, JSONValue>> = {
+  openai: { store: false, include: ["reasoning.encrypted_content"] },
+};
 
 const openaiKey = process.env.OPENAI_API_KEY;
 if (openaiKey) {

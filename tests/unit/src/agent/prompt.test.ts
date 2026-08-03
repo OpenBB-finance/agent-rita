@@ -22,7 +22,7 @@ function w(overrides: Partial<Widget> = {}): Widget {
 describe("buildSystemPrompt — base content", () => {
   it("always includes the base rules and tool priority", () => {
     const out = buildSystemPrompt(req());
-    expect(out).toContain("financial assistant integrated into OpenBB Workspace");
+    expect(out).toContain("financial agent for the OpenBB Workspace");
     expect(out).toContain("Never fabricate data");
     expect(out).toContain("TOOL PRIORITY (strict order for data analysis");
   });

@@ -1,5 +1,5 @@
 import { generateText } from "ai";
-import { resolveModel } from "./providers";
+import { PROVIDER_OPTIONS, resolveModel } from "./providers";
 
 const DEFAULT_MODEL = "openai:gpt-4o-mini";
 // Backstop so a stalled provider can't hang a /generate route forever. Single
@@ -17,6 +17,7 @@ export async function singleShotLlm(
     messages: [{ role: "user", content: prompt }],
     temperature: opts?.temperature ?? 0.1,
     maxOutputTokens: opts?.maxTokens ?? 1024,
+    providerOptions: PROVIDER_OPTIONS,
     abortSignal: AbortSignal.timeout(opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS),
   });
   return result.text.trim();
