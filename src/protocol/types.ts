@@ -89,6 +89,13 @@ export interface WorkspaceState {
   current_dashboard_uuid?: string;
   current_dashboard_info?: DashboardInfo | null;
   action_history?: string[];
+  /**
+   * `widgets.extra` entries carry identity + param names only — option lists,
+   * full descriptions, columns and Snowflake schemas are stripped to keep the
+   * payload sane for accounts with thousands of connected widgets. Details are
+   * fetched on demand (get_widget_schema / prepare_client_sql_tables).
+   */
+  extra_widgets_slim?: boolean;
 }
 
 export type UploadedDocumentFormat = "pdf" | "docx" | "txt" | "md" | "html";
@@ -186,6 +193,29 @@ export interface SnowflakeSchema {
   database: string;
   schema: string;
   columns: SnowflakeColumn[];
+}
+
+/** Browser DuckDB-WASM table schema advertised via widget.metadata.data_table. */
+export type ClientSqlColumnType =
+  | "VARCHAR"
+  | "DOUBLE"
+  | "BIGINT"
+  | "BOOLEAN"
+  | "DATE"
+  | "TIMESTAMP";
+
+export interface ClientDataTableColumn {
+  name: string;
+  type: ClientSqlColumnType | string;
+  label?: string;
+}
+
+export interface ClientDataTable {
+  dialect: "duckdb-wasm";
+  table_name: string;
+  description?: string;
+  row_count?: number;
+  columns: ClientDataTableColumn[];
 }
 
 export interface QueryDataSource {

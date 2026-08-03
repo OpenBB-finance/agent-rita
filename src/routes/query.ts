@@ -79,6 +79,7 @@ const WorkspaceStateSchema = z.object({
     })).optional(),
   }).nullish(),
   action_history: z.array(z.string()).optional(),
+  extra_widgets_slim: z.boolean().optional(),
 }).passthrough();
 
 function parseWorkspaceState(raw: unknown): WorkspaceState | null {
@@ -112,6 +113,17 @@ queryRouter.post("/v1/query", async (c) => {
   const workspaceState = parseWorkspaceState(body.workspace_state);
   const generativeUiEnabled = hasOption("generative-ui")
     && workspaceState?.current_page_context === "dashboard";
+  const clientSqlEnabled = hasOption("client-sql");
+  // Set by the workspace only when the agent declares widget-global-search AND
+  // the user has the toggle on — i.e. the agent may reach connected widgets that
+  // are not on the current dashboard.
+  const globalSearchEnabled = hasOption("widget-global-search");
+  logger.info("workspace_options flags", {
+    clientSqlEnabled,
+    globalSearchEnabled,
+    generativeUiEnabled: hasOption("generative-ui"),
+    optionKeys: Object.keys(opts),
+  });
 
   // Pre-cache widget data from re-POST so the agent can re-fetch from cache if needed
   if (lastMessage?.role === "tool") {
@@ -120,6 +132,7 @@ queryRouter.post("/v1/query", async (c) => {
       toolMsg.function !== "get_skill_content" &&
       toolMsg.function !== "execute_agent_tool" &&
       toolMsg.function !== "get_params_options" &&
+      toolMsg.function !== "execute_client_sql" &&
       !WORKSPACE_BRIDGE_COMMAND_NAMES.has(toolMsg.function)
     ) {
       await cacheWidgetItemsFromReboot(toolMsg, allWidgets);
@@ -173,6 +186,8 @@ queryRouter.post("/v1/query", async (c) => {
       tieredWidgets,
       workspaceState,
       generativeUiEnabled,
+      clientSqlEnabled,
+      globalSearchEnabled,
       promptSuggestionsEnabled,
       conversationId,
     }),

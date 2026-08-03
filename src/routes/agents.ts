@@ -47,6 +47,12 @@ agentsRouter.get("/agents.json", (c) => {
           default: true,
           description: "Show follow-up prompt suggestions after each response.",
         },
+        "client-sql": {
+          label: "Client-side SQL",
+          default: true,
+          description:
+            "Query widget data with DuckDB in your browser instead of sending every row to the agent. With Global data on, also loads connected widgets on demand.",
+        },
         "model": {
           label: "Model",
           type: "select",

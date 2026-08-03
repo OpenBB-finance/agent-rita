@@ -212,6 +212,61 @@ const SSRM_DEFAULTS = {
   sortModel: [],
 };
 
+/**
+ * Emit execute_client_sql for browser DuckDB-WASM execution.
+ * `queries` shape matches the tool schema and terminalpro handler.
+ */
+export function executeClientSql(
+  queries: Array<{
+    sql: string;
+    widget_uuids: string[];
+    row_limit?: number;
+  }>,
+  extraState?: Record<string, unknown>,
+): SSEEvent {
+  return {
+    event: "copilotFunctionCall",
+    data: {
+      function: "execute_client_sql",
+      input_arguments: { queries },
+      extra_state: {
+        copilot_function_call_arguments: {
+          summary: `Run ${queries.length} client SQL quer${queries.length === 1 ? "y" : "ies"}`,
+        },
+        ...(extraState ?? {}),
+      },
+    },
+  };
+}
+
+/**
+ * Emit prepare_client_sql_tables — workspace fetches the widgets, registers them
+ * in DuckDB, and returns the resulting table schemas.
+ */
+export function prepareClientSqlTables(
+  widgets: Array<{
+    widget_uuid?: string;
+    widget_id?: string;
+    origin?: string;
+    input_args?: Record<string, unknown>;
+  }>,
+  extraState?: Record<string, unknown>,
+): SSEEvent {
+  return {
+    event: "copilotFunctionCall",
+    data: {
+      function: "prepare_client_sql_tables",
+      input_arguments: { widgets },
+      extra_state: {
+        copilot_function_call_arguments: {
+          summary: `Load ${widgets.length} widget${widgets.length === 1 ? "" : "s"} into DuckDB`,
+        },
+        ...(extraState ?? {}),
+      },
+    },
+  };
+}
+
 export function getWidgetDataSsrm(
   widget: Widget,
   sql: string,

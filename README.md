@@ -243,6 +243,7 @@ The OpenBB Workspace is the only thing that speaks MCP. The agent just emits SSE
 | Function | Used for | Frontend dispatcher |
 |---|---|---|
 | `get_widget_data` / `get_skill_content` | Bespoke agent paths with widget-tier resolution / skill payload | bespoke |
+| `execute_client_sql` / `prepare_client_sql_tables` | Browser DuckDB-WASM: run SQL over widget tables; `prepare_…` first loads a *connected* widget (not on the dashboard) into DuckDB and returns its real schema. Gated on `client-sql` + `widget-global-search`. | `useStreamResponse` → `useFunctionCall` |
 | `<command>` (one of the 16 vendored bridge commands) | Native workspace ops: `manage_dashboard`, `create_widget`, … | `useWorkspaceBridgeCommandHandler` |
 | `execute_agent_tool` | Any external MCP tool (web search, fetch, mermaid, code sandbox, third-party MCPs) | `useMcpExecutor` |
 

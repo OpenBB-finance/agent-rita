@@ -620,6 +620,309 @@ function djb2(input: string): string {
   return h.toString(36);
 }
 
+interface PreparedClientSqlTable {
+  widget_uuid: string;
+  table_name: string;
+  row_count?: number;
+  description?: string;
+  columns: Array<{ name: string; type: string; label?: string }>;
+  params_used?: Record<string, unknown>;
+}
+
+/**
+ * Read prepare_client_sql_tables results. The workspace ships one item per
+ * widget: a JSON string carrying the registered ClientDataTable plus the ref to
+ * use in execute_client_sql and the params the rows were actually fetched with.
+ */
+function readPreparedClientSqlTables(toolMsg: ToolMessage): {
+  prepared: PreparedClientSqlTable[];
+  errors: string[];
+} {
+  const prepared: PreparedClientSqlTable[] = [];
+  const errors: string[] = [];
+  const items = Array.isArray(toolMsg.data) ? toolMsg.data : [];
+
+  for (const raw of items) {
+    if (!raw || typeof raw !== "object") continue;
+    const item = raw as Record<string, unknown>;
+
+    if (typeof item.error_type === "string") {
+      errors.push(
+        (typeof item.content === "string" && item.content) ||
+          (typeof item.message === "string" && item.message) ||
+          JSON.stringify(item),
+      );
+      continue;
+    }
+
+    const entries = Array.isArray(item.items) ? item.items : [];
+    for (const entry of entries) {
+      const record = entry as Record<string, unknown> | null;
+      if (!record || typeof record.content !== "string") continue;
+      try {
+        const parsed = JSON.parse(record.content) as Record<string, unknown>;
+        if (
+          typeof parsed.table_name === "string" &&
+          typeof parsed.widget_uuid === "string" &&
+          Array.isArray(parsed.columns)
+        ) {
+          prepared.push(parsed as unknown as PreparedClientSqlTable);
+        }
+      } catch {
+        // Not a schema payload — ignore rather than fail the whole turn.
+      }
+    }
+  }
+
+  return { prepared, errors };
+}
+
+function renderPreparedClientSqlTables(
+  prepared: PreparedClientSqlTable[],
+  errors: string[],
+): string {
+  const parts: string[] = ["Result of prepare_client_sql_tables:"];
+
+  if (prepared.length > 0) {
+    parts.push(
+      prepared
+        .map((table) => {
+          const cols = table.columns
+            .map((c) => `${c.name} (${c.type})`)
+            .join(", ");
+          const rows = table.row_count != null ? `, ${table.row_count} rows` : "";
+          const params =
+            table.params_used && Object.keys(table.params_used).length > 0
+              ? `\n  Fetched with: ${JSON.stringify(table.params_used)}`
+              : "";
+          return (
+            `- table \`${table.table_name}\`${rows} [widget_uuid: ${table.widget_uuid}]${params}\n` +
+            `  Columns: ${cols}`
+          );
+        })
+        .join("\n"),
+    );
+    const example = prepared[0];
+    parts.push(
+      "CRITICAL — these tables live in the USER'S BROWSER (DuckDB-WASM). They are NOT in the " +
+        "in-process SQL engine: execute_sql, peek_table and peek_column_values CANNOT see them and " +
+        "will fail with \"no such table\". The ONLY way to query them is execute_client_sql, " +
+        "passing the widget_uuid values above in widget_uuids.\n" +
+        "Example call:\n" +
+        `execute_client_sql({ queries: [{ sql: "SELECT * FROM ${example.table_name} ORDER BY 1 DESC LIMIT 5", ` +
+        `widget_uuids: ["${example.widget_uuid}"] }] })\n` +
+        "State the params each table was fetched with when you report numbers from it — they may " +
+        "differ from what the user asked for.",
+    );
+  }
+
+  if (errors.length > 0) {
+    parts.push(
+      `Failed to load ${errors.length} widget${errors.length === 1 ? "" : "s"}:\n` +
+        errors.map((e) => `- ${e}`).join("\n") +
+        "\nFix the widget reference or supply the required input_args, or fall back to get_widget_data.",
+    );
+  }
+
+  if (prepared.length === 0 && errors.length === 0) {
+    parts.push("No tables were registered.");
+  }
+
+  return parts.join("\n\n");
+}
+
+/**
+ * Pull object-rows out of one execute_client_sql result payload.
+ * Wire formats terminalpro may send:
+ *  - { items: [ { content: "<json array|rowData wrapper>", data_format } ] }
+ *  - { items: [ { ...row }, ... ] }  (if schema ever accepts plain rows)
+ *  - { error_type, content }
+ */
+function rowsFromClientSqlPayload(
+  item: Record<string, unknown>,
+): { rows: Record<string, unknown>[]; error?: string } {
+  if (typeof item.error_type === "string") {
+    return {
+      rows: [],
+      error:
+        (typeof item.content === "string" && item.content) ||
+        (typeof item.message === "string" && item.message) ||
+        JSON.stringify(item),
+    };
+  }
+  // Top-level content string without items (error-ish)
+  if (typeof item.content === "string" && !("items" in item)) {
+    return { rows: [], error: item.content };
+  }
+
+  const rawItems = Array.isArray(item.items) ? (item.items as unknown[]) : [];
+  const rows: Record<string, unknown>[] = [];
+
+  for (const raw of rawItems) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const rec = raw as Record<string, unknown>;
+
+    // DataContent wrapper: content is JSON string of rows or { rowData }
+    if (typeof rec.content === "string") {
+      try {
+        const parsed: unknown = JSON.parse(rec.content);
+        if (Array.isArray(parsed)) {
+          for (const r of parsed) {
+            if (r && typeof r === "object" && !Array.isArray(r)) {
+              rows.push(r as Record<string, unknown>);
+            }
+          }
+          continue;
+        }
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          const obj = parsed as Record<string, unknown>;
+          if (Array.isArray(obj.rowData)) {
+            for (const r of obj.rowData) {
+              if (r && typeof r === "object" && !Array.isArray(r)) {
+                rows.push(r as Record<string, unknown>);
+              }
+            }
+            continue;
+          }
+          // Single row object
+          if (!("data_format" in obj)) {
+            rows.push(obj);
+            continue;
+          }
+        }
+      } catch {
+        // not JSON — skip
+      }
+      continue;
+    }
+
+    // Plain row object (no content/url/error envelope)
+    if (!("data_format" in rec) && !("url" in rec) && !("error_type" in rec)) {
+      rows.push(rec);
+    }
+  }
+
+  return { rows };
+}
+
+/**
+ * Correlate execute_client_sql re-POST data[i] with queries[i].
+ * Success → analyzeTable + setPendingTable + rememberRows as client_sql_<hash>;
+ * inject column list + 5-row preview. Error → verbatim DuckDB message.
+ */
+function injectClientSqlResults(toolMsg: ToolMessage, ctx: RoundTripContext): void {
+  const queries =
+    (toolMsg.input_arguments?.queries as Array<{
+      sql?: string;
+      widget_uuids?: string[];
+      row_limit?: number;
+    }>) ?? [];
+  const dataItems = Array.isArray(toolMsg.data) ? toolMsg.data : [];
+  let anySuccess = false;
+  let anyError = false;
+  const parts: TextPart[] = [
+    {
+      type: "text",
+      text:
+        "Client SQL (DuckDB in workspace) results for your queries.\n" +
+        "If a query succeeded with rows below, ANSWER THE USER FROM THOSE ROWS NOW. " +
+        "Do NOT call get_widget_data, search_widgets, or execute_sql for the same question " +
+        "unless every query failed or returned 0 rows and you still need different data.\n" +
+        "Successful result tables are also available via execute_sql / create_artifact under the client_sql_* names. " +
+        "On SQL errors, fix the SQL and retry execute_client_sql.",
+    },
+  ];
+
+  for (let i = 0; i < Math.max(queries.length, dataItems.length); i++) {
+    const query = queries[i] ?? {};
+    const sql = typeof query.sql === "string" ? query.sql : "";
+    const item = dataItems[i] as Record<string, unknown> | undefined;
+
+    if (!item) {
+      anyError = true;
+      parts.push({
+        type: "text",
+        text: `--- Query ${i + 1} ---\nSQL:\n${sql}\n\nNo result payload returned.`,
+      });
+      continue;
+    }
+
+    const { rows, error } = rowsFromClientSqlPayload(item);
+
+    if (error) {
+      anyError = true;
+      parts.push({
+        type: "text",
+        text:
+          `--- Query ${i + 1} (error) ---\nSQL:\n${sql}\n\n` +
+          `DuckDB error (verbatim): ${error}\n` +
+          `Fix the SQL and retry execute_client_sql. Do not switch to get_widget_data unless the table is unavailable.`,
+      });
+      continue;
+    }
+
+    if (rows.length === 0) {
+      anyError = true;
+      parts.push({
+        type: "text",
+        text:
+          `--- Query ${i + 1} ---\nSQL:\n${sql}\n\n` +
+          `Result: 0 rows. Refine the SQL (filters/joins) via execute_client_sql, ` +
+          `or only then consider get_widget_data if the widget may not be registered.`,
+      });
+      continue;
+    }
+
+    anySuccess = true;
+    const tableName = `client_sql_${djb2(sql || String(i))}`;
+    const table = analyzeTable(tableName, rows);
+    ctx.tables.push(table);
+    setPendingTable(table.tableName, rows, ctx.pendingTables, ctx.tablesShipped);
+    rememberRows(ctx.conversationId, table.tableName, rows);
+
+    const colLines = table.columns
+      .map((col) => {
+        const mapping =
+          col.name !== col.originalName ? `; original label "${col.originalName}"` : "";
+        return `  - "${col.name}" (${col.type}${mapping})`;
+      })
+      .join("\n");
+    const preview = JSON.stringify(queryablePreviewRows(rows, table.columns), null, 2);
+    const maybeTruncated =
+      typeof query.row_limit === "number" && rows.length >= query.row_limit
+        ? ` Possibly truncated (exactly ${query.row_limit} rows).`
+        : rows.length >= 500
+          ? " Possibly truncated (default row_limit 500)."
+          : "";
+
+    parts.push({
+      type: "text",
+      text:
+        `--- Query ${i + 1} (success) ---\nSQL:\n${sql}\n` +
+        `[${table.rowCount} rows — these ARE the query results; use them to answer]\n` +
+        `Also loaded as queryable table "${table.tableName}"${maybeTruncated}\n` +
+        `Queryable columns:\n${colLines}\n` +
+        `Result rows (first 5):\n${preview}`,
+    });
+
+    logger.info("Client SQL result table prepared", {
+      tableName: table.tableName,
+      rows: table.rowCount,
+    });
+  }
+
+  if (anySuccess && !anyError) {
+    parts.push({
+      type: "text",
+      text:
+        "All client SQL queries succeeded. Compose the final answer from the result rows above. " +
+        "Do not call more tools for this question.",
+    });
+  }
+
+  ctx.messages.push({ role: "user" as const, content: parts as UserContent });
+}
+
 /**
  * A short, deterministic, readable token derived from a widget's input args,
  * used to disambiguate table names when the same widget is fetched with
@@ -895,6 +1198,56 @@ export async function* injectFromReboot(
       yield reasoningStep(`Skill "${slug}" loaded`, "INFO", {
         output_preview: content.slice(0, 4_000),
       });
+      return {};
+    }
+
+    case "execute_client_sql": {
+      const beforeTables = ctx.tables.length;
+      injectClientSqlResults(toolMsg, ctx);
+      const added = ctx.tables.length - beforeTables;
+      const dataItems = Array.isArray(toolMsg.data) ? toolMsg.data : [];
+      const hasError = dataItems.some(
+        (d) => d && typeof d === "object" && "error_type" in (d as object),
+      );
+      yield reasoningStep(
+        hasError && added === 0
+          ? "Client SQL returned an error"
+          : added > 0
+            ? `Client SQL returned ${added} result table${added === 1 ? "" : "s"}`
+            : "Client SQL returned no rows",
+        hasError && added === 0 ? "WARNING" : "INFO",
+        {
+          phase: "output",
+          category: "tool_output",
+          tool_name: "execute_client_sql",
+          query_count: Array.isArray(toolMsg.input_arguments?.queries)
+            ? (toolMsg.input_arguments.queries as unknown[]).length
+            : 0,
+          tables_added: added,
+        },
+      );
+      return {};
+    }
+
+    case "prepare_client_sql_tables": {
+      const { prepared, errors } = readPreparedClientSqlTables(toolMsg);
+      ctx.messages.push({
+        role: "user" as const,
+        content: renderPreparedClientSqlTables(prepared, errors),
+      });
+      yield reasoningStep(
+        prepared.length > 0
+          ? `Loaded ${prepared.length} widget${prepared.length === 1 ? "" : "s"} into DuckDB`
+          : "No widgets could be loaded into DuckDB",
+        prepared.length > 0 ? "INFO" : "WARNING",
+        {
+          phase: "output",
+          category: "tool_output",
+          tool_name: "prepare_client_sql_tables",
+          tables_added: prepared.length,
+          errors: errors.length,
+        },
+      );
       return {};
     }
 

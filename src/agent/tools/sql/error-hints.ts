@@ -16,5 +16,7 @@ export function availableTablesHint(loaded: HintTable[]): string {
           `"${table.tableName}" (${table.rowCount} rows; columns: ${columnSummary(table)})`,
       )
       .join("; ")}.`
-    : " No tables shipped — did the widget data load?";
+    : " No tables shipped — did the widget data load? If you loaded a widget with " +
+      "prepare_client_sql_tables, its table lives in the user's browser and this engine cannot " +
+      "see it: query that table with execute_client_sql instead.";
 }

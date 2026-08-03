@@ -1,4 +1,9 @@
-import type { QueryRequest, Widget, SnowflakeSchema } from "../protocol/types";
+import type {
+  ClientDataTable,
+  QueryRequest,
+  SnowflakeSchema,
+  Widget,
+} from "../protocol/types";
 
 export type WidgetTier = "primary" | "secondary" | "extra";
 
@@ -52,6 +57,41 @@ export function getSqlWidgets(
   return widgets.flatMap((w) => {
     const schema = getSqlSchema(w);
     return schema ? [{ widget: w, schema }] : [];
+  });
+}
+
+/**
+ * Duck-type widget.metadata.data_table as a browser DuckDB schema.
+ * Discriminator is dialect === "duckdb-wasm" so this never collides with
+ * Snowflake metadata.schema (which getSqlSchema already handles).
+ */
+export function getClientDataTable(widget: Widget): ClientDataTable | null {
+  const raw = widget.metadata?.data_table;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const t = raw as Record<string, unknown>;
+  if (t.dialect !== "duckdb-wasm") return null;
+  if (typeof t.table_name !== "string" || !t.table_name) return null;
+  if (!Array.isArray(t.columns) || t.columns.length === 0) return null;
+  if (
+    !t.columns.every(
+      (c: unknown) =>
+        typeof c === "object" &&
+        c !== null &&
+        typeof (c as Record<string, unknown>).name === "string" &&
+        typeof (c as Record<string, unknown>).type === "string",
+    )
+  ) {
+    return null;
+  }
+  return raw as unknown as ClientDataTable;
+}
+
+export function getClientSqlWidgets(
+  widgets: Widget[],
+): Array<{ widget: Widget; dataTable: ClientDataTable }> {
+  return widgets.flatMap((w) => {
+    const dataTable = getClientDataTable(w);
+    return dataTable ? [{ widget: w, dataTable }] : [];
   });
 }
 
