@@ -37,6 +37,18 @@ const WEB_SEARCH_TOOL = {
   },
 };
 
+const TAKO_SEARCH_TOOL = {
+  name: "tako_search",
+  server_id: "rita",
+  url: "http://localhost:8787/mcp",
+  description:
+    "Search Tako's live data graph and the web: company financials, macroeconomic indicators, website and app traffic. Returns the figures as text with every source cited.",
+  input_schema: {
+    properties: { query: { type: "string" } },
+    required: ["query"],
+  },
+};
+
 export const mcpRoutingCases: EvalCase[] = [
   {
     id: "explicit-url-routes-to-fetch-webpage",
@@ -77,6 +89,28 @@ export const mcpRoutingCases: EvalCase[] = [
     passRate: 0.5,
     graders: [
       toolCalled("web_search"),
+      toolNeverCalled("fetch_webpage"),
+      noBadState(),
+    ],
+  },
+  {
+    id: "live-financial-metric-routes-to-tako-search",
+    description:
+      "Live financial-data question with a chart ask — model should pick tako_search over fetch_webpage.",
+    messages: [
+      {
+        role: "human",
+        content:
+          "What is Nvidia's revenue trend over the last few years? Show me a chart.",
+      },
+    ],
+    workspace: { primary: [], secondary: [], extra: [] },
+    tools: [TAKO_SEARCH_TOOL, FETCH_WEBPAGE_TOOL],
+    trials: 3,
+    passRate: 0.5,
+    graders: [
+      toolCalled("tako_search"),
+      argContains("tako_search", ["nvidia"]),
       toolNeverCalled("fetch_webpage"),
       noBadState(),
     ],

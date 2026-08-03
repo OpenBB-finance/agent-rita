@@ -10,6 +10,27 @@ import {
   webSearchDescription,
 } from "./tools/backend/web-search";
 import {
+  takoSearchSchema,
+  takoSearchHandler,
+  takoSearchDescription,
+} from "./tools/backend/tako/search";
+import {
+  takoAnswerSchema,
+  takoAnswerHandler,
+  takoAnswerDescription,
+} from "./tools/backend/tako/answer";
+import {
+  takoAvailableDataSchema,
+  takoAvailableDataHandler,
+  takoAvailableDataDescription,
+} from "./tools/backend/tako/available-data";
+import {
+  takoContentsSchema,
+  takoContentsHandler,
+  takoContentsDescription,
+} from "./tools/backend/tako/contents";
+import { isTakoEnabled, isTakoAuthed } from "./tools/backend/tako/client";
+import {
   fetchWebpageSchema,
   fetchWebpageHandler,
   fetchWebpageDescription,
@@ -135,13 +156,39 @@ const mcp = new McpServer({
   version: "1.0.0",
 });
 
-mcp.tool("web_search", webSearchDescription, webSearchSchema, webSearchHandler);
 mcp.tool("fetch_webpage", fetchWebpageDescription, fetchWebpageSchema, fetchWebpageHandler);
 
 // Compute tools — Daytona-backed Python + DuckDB sandbox per conversation.
 // Registered only when DAYTONA_API_KEY is present; otherwise the agent
 // surfaces a clear "compute unavailable" path.
 const logger = getLogger(["mcp", "server"]);
+
+// Tako — live financial/macro/traffic data + web search via Tako's hosted
+// MCP endpoint. Keyless connections ride the anonymous free tier;
+// TAKO_API_TOKEN unlocks account limits + tako_contents. Because the free
+// tier makes Tako always available, Tavily web_search registers only when
+// Tako is explicitly disabled (TAKO_ENABLED=false) — a config-level
+// registration conditional, not content routing.
+const takoEnabled = isTakoEnabled();
+const takoAuthed = isTakoAuthed();
+if (takoEnabled) {
+  mcp.tool("tako_search", takoSearchDescription, takoSearchSchema, takoSearchHandler);
+  mcp.tool("tako_answer", takoAnswerDescription, takoAnswerSchema, takoAnswerHandler);
+  mcp.tool(
+    "tako_available_data",
+    takoAvailableDataDescription,
+    takoAvailableDataSchema,
+    takoAvailableDataHandler,
+  );
+  if (takoAuthed) {
+    mcp.tool("tako_contents", takoContentsDescription, takoContentsSchema, takoContentsHandler);
+  } else {
+    logger.info("TAKO_API_TOKEN not set — tako_contents disabled, free tier active");
+  }
+} else {
+  mcp.tool("web_search", webSearchDescription, webSearchSchema, webSearchHandler);
+  logger.warn("TAKO_ENABLED=false — Tako tools disabled, Tavily web_search registered instead");
+}
 
 // Mermaid — rendered server-side to SVG via Playwright Chromium. Registered
 // only when the browser binary is installed; otherwise the tool would fail
@@ -325,6 +372,7 @@ app.use(
       "mcp-session-id",
       "mcp-protocol-version",
       "last-event-id",
+      "x-openbb-user",
     ],
     exposeHeaders: ["mcp-session-id"],
   }),
@@ -349,7 +397,14 @@ app.get("/", (c) =>
     },
     tools: {
       backend: [
-        "web_search",
+        ...(takoEnabled
+          ? [
+              "tako_search",
+              "tako_answer",
+              "tako_available_data",
+              ...(takoAuthed ? ["tako_contents"] : []),
+            ]
+          : ["web_search"]),
         "fetch_webpage",
         ...(mermaidEnabled ? ["mermaid_diagram"] : []),
         ...(codeExecEnabled ? ["execute_code"] : []),
@@ -399,5 +454,5 @@ export default {
 };
 
 logger.info(
-  `MCP server starting port=${PORT} codeExecEnabled=${codeExecEnabled} docRagEnabled=${docRagEnabled} mermaidEnabled=${mermaidEnabled} companionToolsEnabled=${companionToolsEnabled} bridgeMounted=true`,
+  `MCP server starting port=${PORT} codeExecEnabled=${codeExecEnabled} takoEnabled=${takoEnabled} takoAuthed=${takoAuthed} docRagEnabled=${docRagEnabled} mermaidEnabled=${mermaidEnabled} companionToolsEnabled=${companionToolsEnabled} bridgeMounted=true`,
 );

@@ -235,7 +235,7 @@ function describeMcpTools(tools: McpToolEntry[]): string {
     .map((t) => `- ${t.sanitizedName}: ${t.description}`)
     .join("\n");
   return (
-    "\nMCP Tools (external tools — use only when connected widgets do not cover the question; check search_widgets first):\n" +
+    "\nMCP Tools (external tools — prefer a connected widget when one already covers the question, otherwise these are data sources in their own right):\n" +
     items
   );
 }
@@ -288,7 +288,7 @@ function buildDateSection(request: QueryRequest): string {
   let section =
     `CURRENT DATE: ${formatCurrentDate(new Date(), request.timezone)}. This is today — it is authoritative. ` +
     "Your training data ends earlier, so for anything time-sensitive (recent events, news, \"latest\"/\"current\"/\"this year\", or date math) rely on this date rather than your training assumptions. " +
-    "When you call web_search for recent information, use the year shown here.";
+    "When you search the web for recent information, use the year shown here.";
   if (request.timezone) section += `\nUser timezone: ${request.timezone}`;
   return section;
 }
@@ -345,7 +345,14 @@ export function buildSystemPrompt(
     const counts = `${primary.length} added to context, ${secondary.length} on dashboard, ${extra.length} connected`;
     sections.push(`\nAvailable data sources (${counts}):${parts.filter(Boolean).join("\n")}`);
   } else {
-    sections.push("\nNo widgets or data sources are currently available in this session.");
+    // Saying "no data sources" while MCP tools are registered makes the model
+    // refuse questions those tools can answer — it reports having no data
+    // source rather than calling one.
+    sections.push(
+      (options?.mcpToolEntries ?? []).length > 0
+        ? "\nNo widgets are connected in this session. The external tools listed below are still available — check whether one covers the question before telling the user you have no data source for it."
+        : "\nNo widgets or data sources are currently available in this session.",
+    );
   }
 
   const sqlWidgets = getSqlWidgets([...primary, ...secondary]);
