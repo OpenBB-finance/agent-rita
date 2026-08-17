@@ -10,7 +10,7 @@
 
 import { tool } from "ai";
 import { z } from "zod";
-import { buildDb } from "./db";
+import { buildDb, tableNotFoundMessage } from "./db";
 import { availableTablesHint } from "./error-hints";
 import { rejectUnsafeSql, rejectUnsafeTableName } from "./safety";
 import { messageArtifact } from "../../../protocol/events";
@@ -209,19 +209,15 @@ export function runCreateArtifact(
 
   let rows: Record<string, unknown>[];
   if (fromTableId) {
-    const cached = ctx.pendingTables.get(fromTableId);
-    if (!cached) {
-      const known = [...ctx.pendingTables.keys()].join(", ") || "(none)";
-      return `Error: table "${fromTableId}" not found in pendingTables. Loaded: ${known}.`;
-    }
     const denyMsg = rejectUnsafeTableName(fromTableId);
     if (denyMsg) return denyMsg;
     const { db, loaded } = buildDb(ctx.pendingTables);
     try {
       const tInfo = loaded.find((t) => t.tableName === fromTableId);
       if (!tInfo) {
-        const known = loaded.map((t) => t.tableName).join(", ") || "(none)";
-        return `Error: table "${fromTableId}" not loaded. Available: ${known}.`;
+        // Keep this tool's `Error:` prefix — `artifactFailed` in tool-status
+        // classifies create_artifact failures by it.
+        return `Error: ${tableNotFoundMessage(fromTableId, loaded)}`;
       }
       rows = db.query(`SELECT * FROM "${fromTableId}"`).all() as Record<
         string,

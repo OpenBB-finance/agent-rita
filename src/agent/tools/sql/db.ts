@@ -12,6 +12,7 @@
  */
 
 import { Database } from "bun:sqlite";
+import { FETCH_MISSING_TABLE_HINT, NO_TABLES_LOADED_MESSAGE } from "./error-hints";
 
 export interface LoadedTable {
   tableName: string;
@@ -112,7 +113,7 @@ export function describeColumns(t: LoadedTable): string {
 }
 
 export function tableNotFoundMessage(requested: string, loaded: LoadedTable[]): string {
-  if (loaded.length === 0) return `No tables available. Did the agent ship any?`;
+  if (loaded.length === 0) return NO_TABLES_LOADED_MESSAGE;
   const names = loaded.map((t) => `"${t.tableName}"`).join(", ");
-  return `Table "${requested}" not loaded. Available: ${names}.`;
+  return `Table "${requested}" not loaded. Available: ${names}.${FETCH_MISSING_TABLE_HINT}`;
 }

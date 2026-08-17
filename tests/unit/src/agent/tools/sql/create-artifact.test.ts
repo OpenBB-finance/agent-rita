@@ -138,8 +138,12 @@ describe("runCreateArtifact — guards", () => {
       },
       c,
     );
-    expect(text).toContain("not found in pendingTables");
+    // Internal state names must not leak into tool output — the model echoes
+    // them back to the user. Route through the shared not-found contract.
+    expect(text).not.toContain("pendingTables");
+    expect(text).toContain('Table "missing" not loaded');
     expect(text).toContain("prices");
+    expect(text).toContain("call get_widget_data");
     expect(c.artifactQueue.length).toBe(0);
   });
 

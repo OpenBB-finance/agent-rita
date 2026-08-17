@@ -104,6 +104,9 @@ describe("runExecuteSql — errors", () => {
     expect(text).toContain("SQL error");
     expect(text).toContain("Available tables:");
     expect(text).toContain('"prices"');
+    // The listing alone reads as terminal state; the model must be told the
+    // missing table may just be an unfetched widget.
+    expect(text).toContain("call get_widget_data");
   });
 
   it("returns raw missing-column errors with loaded table context", () => {
@@ -143,10 +146,11 @@ describe("runExecuteSql — errors", () => {
     expect(text).toContain('"cpi" (1 rows; columns: "date", "country", "value")');
   });
 
-  it("returns a 'no tables shipped' hint when nothing was loaded", () => {
+  it("tells the model how to load data when nothing was loaded", () => {
     const text = runExecuteSql({ sql: "SELECT * FROM whatever" }, ctx());
     expect(text).toContain("SQL error");
-    expect(text).toContain("No tables shipped");
+    expect(text).toContain("No widget data is loaded");
+    expect(text).toContain("call get_widget_data");
   });
 
   it("returns raw SQLite compound SELECT ORDER BY errors", () => {

@@ -18,13 +18,25 @@ describe("runPeekTable — guards", () => {
   });
 
   it("returns the no-tables message when nothing is loaded", () => {
-    expect(runPeekTable({}, ctx())).toContain("No tables shipped");
+    const text = runPeekTable({}, ctx());
+    expect(text).toContain("No widget data is loaded");
+    expect(text).toContain("call get_widget_data");
   });
 
   it("returns table-not-found when name does not match", () => {
     const text = runPeekTable({ table_name: "missing" }, ctx({ prices }));
     expect(text).toContain('Table "missing" not loaded');
     expect(text).toContain('"prices"');
+  });
+
+  // Regression: the not-found message used to end at "Available: ...", which
+  // reads as terminal state. The model treated a missing table as "the data
+  // is not available" and asked the user for permission to load it, even
+  // though the widget was listed in the prompt with its uuid.
+  it("tells the model to fetch the widget instead of stopping at the missing table", () => {
+    const text = runPeekTable({ table_name: "missing" }, ctx({ prices }));
+    expect(text).toContain("call get_widget_data");
+    expect(text).toContain("Do not ask the user for permission");
   });
 });
 

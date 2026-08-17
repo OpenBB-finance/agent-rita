@@ -14,7 +14,9 @@ function ctx(tables: Record<string, Record<string, unknown>[]> = {}) {
 
 describe("runPeekColumnValues — guards", () => {
   it("returns the no-tables message when nothing loaded", () => {
-    expect(runPeekColumnValues({ column: "symbol" }, ctx())).toContain("No tables shipped");
+    const text = runPeekColumnValues({ column: "symbol" }, ctx());
+    expect(text).toContain("No widget data is loaded");
+    expect(text).toContain("call get_widget_data");
   });
 
   it("returns table-not-found when name does not match", () => {
@@ -23,6 +25,7 @@ describe("runPeekColumnValues — guards", () => {
       ctx({ prices }),
     );
     expect(text).toContain('Table "missing" not loaded');
+    expect(text).toContain("call get_widget_data");
   });
 });
 
