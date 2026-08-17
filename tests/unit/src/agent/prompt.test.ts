@@ -22,7 +22,7 @@ function w(overrides: Partial<Widget> = {}): Widget {
 describe("buildSystemPrompt — base content", () => {
   it("always includes the base rules and tool priority", () => {
     const out = buildSystemPrompt(req());
-    expect(out).toContain("financial assistant integrated into OpenBB Workspace");
+    expect(out).toContain("financial agent for the OpenBB Workspace");
     expect(out).toContain("Never fabricate data");
     expect(out).toContain("TOOL PRIORITY (strict order for data analysis");
   });
@@ -30,6 +30,26 @@ describe("buildSystemPrompt — base content", () => {
   it("notes when no widgets are available", () => {
     const out = buildSystemPrompt(req());
     expect(out).toContain("No widgets or data sources are currently available");
+  });
+
+  // Regression: with only the "widget list is metadata" and "only query
+  // already-loaded tables" rules, the model answered "that widget's data is
+  // not loaded — want me to load it?" instead of fetching a widget it could
+  // already see. The complement of the prohibition has to be stated.
+  it("tells the model that an unloaded but visible widget is a fetch, not a question", () => {
+    const out = buildSystemPrompt(req());
+    expect(out).toContain("a fetch, not a question");
+    expect(out).toContain("do not ask permission to fetch");
+    expect(out).toContain("not evidence that the widget is empty, broken, or unavailable");
+  });
+
+  // The rule above must not become fabrication pressure: a widget that errors
+  // or returns nothing IS unavailable, and saying so is the honest answer.
+  it("still requires reporting real fetch failures after the fetch", () => {
+    const out = buildSystemPrompt(req());
+    expect(out).toContain("After a fetch, report what actually happened");
+    expect(out).toContain("say plainly what failed");
+    expect(out).toContain("Asking the user for a parameter value you cannot resolve is correct");
   });
 
   it("explicitly tells the model to pass widget identifiers under widget_uuid", () => {

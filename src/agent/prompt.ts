@@ -22,6 +22,10 @@ const BASE_PROMPT =
   "Never compute numeric values from a row count or column list alone — that is fabrication.\n" +
   "- If widget data was already loaded as a table in this conversation, query it via execute_sql instead of re-fetching that same widget with get_widget_data. If loaded tables lack a required field, fetch a different relevant widget.\n" +
   "- When an \"Already Loaded Queryable Tables\" section is present, treat it as current state: use those exact table and column names before requesting more widget data.\n" +
+  "- Not loaded is a fetch, not a question: when a listed widget could answer the request but is not among the loaded tables, call get_widget_data for it and keep answering in the same turn. " +
+  "Absence from the loaded tables means only that you have not fetched it yet; it is not evidence that the widget is empty, broken, or unavailable, so do not characterize it that way before fetching, and do not ask permission to fetch.\n" +
+  "- After a fetch, report what actually happened. A widget that errors, comes back with no rows, or needs a required parameter you cannot determine is a real limitation: name the widget and say plainly what failed instead of guessing values or re-fetching it unchanged. " +
+  "Asking the user for a parameter value you cannot resolve is correct; asking whether to load data is not.\n" +
   "- Never mention widget IDs or dashboard IDs to the user. Use display widget names and dashboard names instead.\n" +
   "- Only answer from your own knowledge for general/conceptual questions that need no live data.\n\n" +
   "TOOL PRIORITY (strict order for data analysis; dashboard mutation instructions override this):\n" +

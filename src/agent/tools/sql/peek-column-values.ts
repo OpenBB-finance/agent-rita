@@ -5,6 +5,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { buildDb, tableNotFoundMessage } from "./db";
+import { NO_TABLES_LOADED_MESSAGE } from "./error-hints";
 import { rejectUnsafeTableName } from "./safety";
 import { getLogger } from "../../../lib/logger";
 import { DISPLAY_SUMMARY_TOOL_TEXT, displaySummarySchema } from "../progress";
@@ -48,7 +49,7 @@ export function runPeekColumnValues(
   );
   const { db, loaded } = buildDb(ctx.pendingTables);
   try {
-    if (loaded.length === 0) return "No tables shipped.";
+    if (loaded.length === 0) return NO_TABLES_LOADED_MESSAGE;
     const target = args.table_name ?? loaded[0].tableName;
     const denyMsg = rejectUnsafeTableName(target);
     if (denyMsg) return denyMsg;
