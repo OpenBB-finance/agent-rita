@@ -101,7 +101,13 @@ describe("workspace bridge — generic dispatch", () => {
     expect(fc).toBeDefined();
     const data = fc!.data as { input_arguments: unknown; extra_state?: Record<string, unknown> };
     expect(data.input_arguments).toEqual(args);
-    expect(data.extra_state).toEqual({ copilot_function_call_arguments: args });
+    // turn_usage rides every round-trip emission so the next request can add
+    // to it — a turn's token total is otherwise unrecoverable once this
+    // generator exits. The mock LLM reports 1 in / 1 out per call.
+    expect(data.extra_state).toEqual({
+      copilot_function_call_arguments: args,
+      turn_usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2, postCount: 1 },
+    });
     expect(findFunctionCall(events, "execute_agent_tool")).toBeUndefined();
   });
 

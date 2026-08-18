@@ -292,6 +292,23 @@ Across multi-step round-trips the in-flight set is serialized into `extra_state.
 
 One nuance: the Workspace recognizes `source_info.type` of `widget`, `web`, `artifact`, `direct retrieval`, and `findb`. Anything else (including `document`) renders nothing, so document citations from MCP are mapped to `web`.
 
+### Observability (OpenTelemetry)
+
+Off unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set. With no endpoint the API hands back a no-op tracer, every span is non-recording, and nothing is exported — so call sites never branch on "is telemetry on."
+
+The thing worth understanding is that **a logical turn is N HTTP POSTs, not one.** Every round-trip — `get_widget_data`, `execute_agent_tool`, the 16 bridge commands, the `pending_bridge_calls` drain — ends the generator and the browser re-POSTs. Two keys ride `extra_state` to keep the turn coherent across that hop:
+
+- `traceparent` — the W3C span context of the **first** request in the turn, echoed forward verbatim. Later requests parent to it, so all N land in one trace instead of N disconnected ones. Propagating the root (not the previous request) keeps the tree flat: a 19-call bridge drain produces 19 siblings, not 19 levels of nesting. Later spans legitimately start after their parent ended — read turn wall-clock off the trace, not the root span.
+- `turn_usage` — token usage summed across every request in the turn. Per-request counters die with the generator, so without this a turn's cost is unrecoverable. Note that input tokens grow on each re-POST, because `buildMessages` re-renders the conversation every time; the turn total is the sum of a growing series, which is what you actually pay.
+
+Both arrive via the browser, so both are untrusted: `parseTraceparent` and `readTurnUsage` return null/zero on anything malformed rather than throwing. A bad counter must never cost the user their turn.
+
+Model calls are instrumented through the AI SDK's `experimental_telemetry` (the only two call sites are `streamText` in `src/agent/loop.ts` and `generateText` in `src/lib/llm.ts`), which yields per-step spans with tool calls and usage. The `streamText` call is explicitly bound to the turn span via `context.with` — the loop is an AsyncGenerator, and ambient context doesn't reliably survive its yields.
+
+The `Token usage` log line carries `conversationId` and `traceId` alongside both the request and turn totals, so usage stays attributable when many chats interleave in one log stream.
+
+Two known gaps: MCP-server spans orphan (the browser calls that server, not the agent — closing it means adding an `x-agentrita-traceparent` decoration), and browser-side execution time is only visible as the gap between requests. Auto-instrumentation is deliberately absent: `@opentelemetry/instrumentation-*` patches Node's module registry and will not see `Bun.serve` or `fetch`.
+
 ### Path A vs Path B
 
 The same bridge commands are reachable two ways, both terminating in the same browser handler:
@@ -344,6 +361,15 @@ GROQ_API_KEY          # Groq models
 OLLAMA_BASE_URL       # Ollama endpoint (default http://localhost:11434/api)
 DEFAULT_MODEL         # Fallback model when a request omits one (default openai:gpt-4o)
 PORT                  # Agent port (default 7777)
+
+OTEL_EXPORTER_OTLP_ENDPOINT         # Enables tracing. Unset = telemetry entirely off (no spans, no cost)
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT  # Optional — traces-specific endpoint, wins over the above
+OTEL_SERVICE_NAME                   # Optional — service.name on exported spans (default agent-rita)
+OTEL_SERVICE_VERSION                # Optional — service.version on exported spans (default "dev")
+OTEL_TRACES_CONSOLE                 # "true" prints spans to stdout — dev only, no collector needed
+OTEL_RECORD_PROMPTS                 # "true" puts prompts, widget rows and SQL results into span
+                                    # attributes. Off by default: that is customer data leaving the
+                                    # process. Only enable against a self-hosted collector.
 ```
 
 **Companion MCP server (`mcp-server/`):**

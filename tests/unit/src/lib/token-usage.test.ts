@@ -6,6 +6,8 @@ import {
   TokenUsageSchema,
   usageHiddenEvent,
   usageVisibleEvent,
+  readTurnUsage,
+  ZERO_TURN_USAGE,
 } from "../../../../src/lib/token-usage";
 import type { LanguageModelUsage } from "ai";
 
@@ -85,6 +87,38 @@ describe("TokenUsageSchema", () => {
         stepCount: 2,
       }).estimatedCostUsd,
     ).toBeNull();
+  });
+});
+
+describe("readTurnUsage", () => {
+  it("returns zeros when absent (first POST of a turn)", () => {
+    expect(readTurnUsage(undefined)).toEqual(ZERO_TURN_USAGE);
+  });
+
+  it("reads a well-formed echoed value", () => {
+    expect(
+      readTurnUsage({ inputTokens: 10, outputTokens: 5, totalTokens: 15, postCount: 2 }),
+    ).toEqual({ inputTokens: 10, outputTokens: 5, totalTokens: 15, postCount: 2 });
+  });
+
+  // extra_state round-trips through the browser — every one of these is
+  // reachable from the wire, and a throw here would kill the whole turn.
+  it.each([
+    ["null", null],
+    ["a string", "12"],
+    ["an array", [1, 2, 3]],
+    ["a negative count", { inputTokens: -1, outputTokens: 0, totalTokens: 0, postCount: 1 }],
+    ["a fractional count", { inputTokens: 1.5, outputTokens: 0, totalTokens: 0, postCount: 1 }],
+    ["NaN", { inputTokens: NaN, outputTokens: 0, totalTokens: 0, postCount: 1 }],
+    ["Infinity", { inputTokens: Infinity, outputTokens: 0, totalTokens: 0, postCount: 1 }],
+    ["a missing field", { inputTokens: 1, outputTokens: 2 }],
+    ["string-typed numbers", { inputTokens: "1", outputTokens: "2", totalTokens: "3", postCount: "1" }],
+  ])("falls back to zeros for %s", (_label, input) => {
+    expect(readTurnUsage(input)).toEqual(ZERO_TURN_USAGE);
+  });
+
+  it("never returns the same object twice (callers mutate their copy)", () => {
+    expect(readTurnUsage(undefined)).not.toBe(readTurnUsage(undefined));
   });
 });
 

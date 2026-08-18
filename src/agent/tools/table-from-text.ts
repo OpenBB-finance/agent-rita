@@ -69,7 +69,7 @@ export async function runTableFromText(
     "Keys must be lowercase snake_case. Numeric values must be numbers, not strings. " +
     "If no table can reasonably be extracted, return [].\n\n" +
     `Text:\n${text}\n\nJSON:`;
-  const raw = await singleShotLlm(prompt, { maxTokens: 2048 });
+  const raw = await singleShotLlm(prompt, { maxTokens: 2048, functionId: "tool.create-table-from-text" });
   const rows = parseJsonResponse<Record<string, unknown>[]>(raw, []);
 
   if (!Array.isArray(rows) || rows.length === 0) {

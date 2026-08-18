@@ -47,7 +47,7 @@ export async function runEnhancePrompt(args: EnhancePromptArgs): Promise<string>
     `Original query: ${args.query}\n` +
     `Why it needs sharpening: ${args.reasoning}\n\n` +
     "Enhanced query:";
-  const enhanced = await singleShotLlm(prompt, { maxTokens: 256 });
+  const enhanced = await singleShotLlm(prompt, { maxTokens: 256, functionId: "tool.enhance-prompt" });
   logger.info("enhance_prompt exit", {
     ms: Date.now() - startedAt,
     chars: enhanced.length,

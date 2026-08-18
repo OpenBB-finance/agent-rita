@@ -66,6 +66,47 @@ export function accumulateUsage(
   };
 }
 
+/**
+ * Token usage for a whole logical turn — i.e. summed across every re-POST the
+ * round-trip protocol produced, not just the current request. Rides
+ * `extra_state.turn_usage` so it survives the browser hop.
+ *
+ * Input tokens grow on each re-POST because `buildMessages` re-renders the
+ * conversation (including earlier tool results) every time. The turn total is
+ * therefore the sum of a growing series, which is what you actually pay and
+ * what per-request logging structurally hides.
+ */
+export interface TurnUsage {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  postCount: number;
+}
+
+export const ZERO_TURN_USAGE: TurnUsage = Object.freeze({
+  inputTokens: 0,
+  outputTokens: 0,
+  totalTokens: 0,
+  postCount: 0,
+});
+
+const TurnUsageSchema = z.object({
+  inputTokens: z.number().int().nonnegative(),
+  outputTokens: z.number().int().nonnegative(),
+  totalTokens: z.number().int().nonnegative(),
+  postCount: z.number().int().nonnegative(),
+});
+
+/**
+ * Read the echoed turn total. Untrusted (browser-echoed) input: anything
+ * malformed resets to zero rather than throwing, because a bad counter must
+ * never cost the user their turn.
+ */
+export function readTurnUsage(raw: unknown): TurnUsage {
+  const parsed = TurnUsageSchema.safeParse(raw);
+  return parsed.success ? parsed.data : { ...ZERO_TURN_USAGE };
+}
+
 export function estimateCost(
   modelId: string,
   usage: { inputTokens: number; outputTokens: number },

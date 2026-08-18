@@ -44,7 +44,7 @@ codeRouter.post("/v1/generate/code", async (c) => {
   const fallback = { success: false as const, error_message: "Code generation failed" };
 
   try {
-    const text = await singleShotLlm(prompt, { model, maxTokens: 2048 });
+    const text = await singleShotLlm(prompt, { model, maxTokens: 2048, functionId: "generate.code" });
     const result = parseJsonResponse(text, fallback);
     logger.info("code generated", { language, success: result.success });
     return c.json(result);

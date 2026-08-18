@@ -57,6 +57,28 @@ export interface ExtraState {
    * pattern as `compute_tables_shipped`.
    */
   documents_shipped?: string[];
+  /**
+   * W3C traceparent of the FIRST request in this logical turn. Set once and
+   * echoed forward verbatim, so every re-POST joins the same trace with the
+   * first request's span as parent. Without it, a turn that round-trips five
+   * times produces five disconnected traces, each looking like a turn that
+   * stops mid-thought.
+   *
+   * Untrusted (browser-echoed) — validated by `parseTraceparent` in
+   * src/lib/telemetry.ts, which returns null rather than throwing.
+   */
+  traceparent?: string;
+  /**
+   * Token usage summed across every re-POST of this turn so far. Per-request
+   * counters reset with the generator, so without this the turn total is
+   * unknowable. See `TurnUsage` in src/lib/token-usage.ts.
+   */
+  turn_usage?: {
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+    postCount: number;
+  };
 }
 
 export function readExtraState(toolMsg: ToolMessage): ExtraState {

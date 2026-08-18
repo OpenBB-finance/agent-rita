@@ -59,7 +59,7 @@ widgetInfoRouter.post("/v1/generate/widget_info", async (c) => {
   };
 
   try {
-    const text = await singleShotLlm(prompt, { model });
+    const text = await singleShotLlm(prompt, { model, functionId: "generate.widget-info" });
     const result = parseJsonResponse(text, fallback);
     logger.info("widget_info generated", { title: result.title });
     return c.json(result);
@@ -94,7 +94,7 @@ widgetInfoRouter.post("/v1/generate/widget_info/file", async (c) => {
   const fallback = { title: filename.replace(/\.[^.]+$/, ""), description: filename };
 
   try {
-    const text = await singleShotLlm(prompt);
+    const text = await singleShotLlm(prompt, { functionId: "generate.widget-info.fallback" });
     const result = parseJsonResponse(text, fallback);
     logger.info("widget_info/file generated", { title: result.title, filename });
     return c.json(result);

@@ -70,9 +70,20 @@ import {
   flattenUsage,
   accumulateUsage,
   estimateCost,
+  readTurnUsage,
+  ZERO_TURN_USAGE,
 } from "../lib/token-usage";
 import { getLogger } from "../lib/logger";
 import { PROVIDER_OPTIONS } from "../lib/providers";
+import {
+  getTracer,
+  parseTraceparent,
+  contextFromSpanContext,
+  formatTraceparent,
+  traceIdForLogs,
+  aiTelemetry,
+} from "../lib/telemetry";
+import { context as otelContext, trace as otelTrace, SpanStatusCode, type Span } from "@opentelemetry/api";
 
 const logger = getLogger(["app", "agent", "loop"]);
 
@@ -542,6 +553,73 @@ export async function* runAgentLoop(options: AgentRunOptions): AsyncGenerator<SS
     for (const d of rebootExtra.documents_shipped ?? []) documentsShipped.add(d);
     if (rebootExtra.compute_sandbox_id) lastSandboxId = rebootExtra.compute_sandbox_id;
   }
+
+  // --- Turn-level tracing ---
+  // A logical turn spans N HTTP POSTs: every round-trip (get_widget_data,
+  // execute_agent_tool, bridge commands, the pending_bridge_calls drain) ends
+  // this generator and the browser re-POSTs. `turnParent` is the span context
+  // of the FIRST request in the turn, echoed forward through extra_state, so
+  // all N requests land in one trace. Absent or malformed → this request is
+  // the turn root and starts a fresh trace.
+  //
+  // The later requests are children that begin after their parent has ended.
+  // That is intentional and legal: the parent's duration measures its own
+  // request, not the turn. Read the turn's wall-clock off the trace, not the
+  // root span.
+  //
+  // ONE validated parse drives both the parent span and the value propagated
+  // onward. Deriving them separately lets them disagree exactly when the
+  // echoed value is corrupt: the span would (correctly) start a fresh trace
+  // while the corrupt string kept riding extra_state, so every later request
+  // would fail to parse it too and the turn would shatter permanently.
+  const inheritedRoot = isRebootToolTurn ? parseTraceparent(rebootExtra.traceparent) : null;
+  const turnSpan: Span = getTracer().startSpan(
+    "rita.turn.request",
+    {
+      attributes: {
+        "rita.conversation_id": conversationId || "(missing)",
+        "rita.model": rawModelId,
+        "rita.reboot": isRebootToolTurn,
+        "rita.reboot_function": isRebootToolTurn ? lastMessage.function : "",
+        "rita.widget_count": allWidgets.length,
+        "rita.mcp_tool_count": agentTools.length,
+      },
+    },
+    inheritedRoot ? contextFromSpanContext(inheritedRoot) : undefined,
+  );
+  const turnSpanCtx = otelTrace.setSpan(otelContext.active(), turnSpan);
+  const turnSpanContext = turnSpan.spanContext();
+  // Propagate the ROOT of the turn, not this request's span — keeps every
+  // re-POST a direct child of the first request instead of nesting 19 deep on
+  // a queued-bridge-call drain. With no valid inherited root, this request IS
+  // the root and offers its own span so the rest of the turn can still stitch.
+  const turnTraceparent =
+    formatTraceparent(inheritedRoot ?? turnSpanContext) ?? undefined;
+  // Token usage for the whole turn so far. Per-request counters reset with the
+  // generator; this is the number that answers "what did this question cost".
+  const priorTurnUsage = isRebootToolTurn ? readTurnUsage(rebootExtra.turn_usage) : ZERO_TURN_USAGE;
+
+  // Declared out here (not inside the try) so the `finally` that ends the turn
+  // span can read the final counts on every exit path, including the early
+  // returns each round-trip takes.
+  let cumulativeUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+  let totalStepCount = 0;
+  let loopCount = 0;
+
+  /**
+   * This request's usage folded into the turn total echoed by earlier
+   * requests. `postCount` counts requests in the turn, so a turn that
+   * round-trips five times reports 5 — the number that explains why input
+   * tokens are so much larger than the visible conversation.
+   */
+  function turnUsageSoFar() {
+    return {
+      inputTokens: priorTurnUsage.inputTokens + cumulativeUsage.inputTokens,
+      outputTokens: priorTurnUsage.outputTokens + cumulativeUsage.outputTokens,
+      totalTokens: priorTurnUsage.totalTokens + cumulativeUsage.totalTokens,
+      postCount: priorTurnUsage.postCount + 1,
+    };
+  }
   // Decode/fetch uploaded documents once per request. Bytes live only for
   // the lifetime of this generator; the MCP server holds the parsed/embedded
   // form per conversation.
@@ -645,6 +723,8 @@ export async function* runAgentLoop(options: AgentRunOptions): AsyncGenerator<SS
       if (lastSandboxId !== undefined) extraState.compute_sandbox_id = lastSandboxId;
       if (documentsShipped.size > 0) extraState.documents_shipped = [...documentsShipped];
       if (loadedSkillSlugs.size > 0) extraState.loaded_skill_slugs = [...loadedSkillSlugs];
+      if (turnTraceparent) extraState.traceparent = turnTraceparent;
+      extraState.turn_usage = turnUsageSoFar();
       return extraState;
     }
 
@@ -855,9 +935,6 @@ export async function* runAgentLoop(options: AgentRunOptions): AsyncGenerator<SS
         ? "I couldn't finish the response because the model timed out. Try a narrower request."
         : `I couldn't finish the response because the model returned an error: ${conciseError}`;
     }
-    let cumulativeUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
-    let totalStepCount = 0;
-    let loopCount = 0;
     let suppressWidgetDataToolForCachedRetry = false;
     const searchTool = makeSearchWidgetsTool(tieredWidgets);
     const createAppTool = makeCreateAppTool({ allWidgets, artifactQueue });
@@ -950,7 +1027,11 @@ export async function* runAgentLoop(options: AgentRunOptions): AsyncGenerator<SS
       if (loopIdx === 0) {
         logger.info("Tools available", { tools: Object.keys(tools), mcpCount: agentTools.length });
       }
-      const result = streamText({
+      // Bind the model call to the turn span explicitly. The generator yields
+      // between OTel context switches, so ambient (AsyncLocalStorage) context
+      // is not reliable here — without this the AI SDK's spans would each
+      // start a trace of their own.
+      const result = otelContext.with(turnSpanCtx, () => streamText({
         model,
         messages,
         tools,
@@ -966,7 +1047,12 @@ export async function* runAgentLoop(options: AgentRunOptions): AsyncGenerator<SS
         providerOptions: PROVIDER_OPTIONS,
         abortSignal: AbortSignal.timeout(LLM_STREAM_TIMEOUT_MS),
         onError: ({ error }) => logger.error("streamText error part", { loopIdx, error }),
-      });
+        experimental_telemetry: aiTelemetry("agent.loop", {
+          conversation_id: conversationId || undefined,
+          model: rawModelId,
+          loop_idx: loopIdx,
+        }),
+      }));
 
       // Live emission. We consume `fullStream` so in-process tool chains
       // (search_widgets → SQL → create_artifact, none of which round-trip)
@@ -1253,13 +1339,26 @@ export async function* runAgentLoop(options: AgentRunOptions): AsyncGenerator<SS
       // workspace. Usage resolves after the stream drains, so any SSE (even a
       // hidden one) lands after the message text and the workspace renders it
       // as a trailing "Agent Rita" reasoning block below the answer.
+      // `cumulativeUsage` covers THIS request only — it dies with the
+      // generator. `turnUsage` is the running total across every re-POST of
+      // the turn, and `conversationId` is what makes either number
+      // attributable when requests from many chats interleave in one log
+      // stream.
       const estimatedCostUsd = estimateCost(rawModelId, cumulativeUsage);
+      const turnUsage = turnUsageSoFar();
       logger.info("Token usage", {
+        conversationId: conversationId || "(missing)",
+        traceId: traceIdForLogs(turnSpanContext),
         modelId: rawModelId,
         ...cumulativeUsage,
         estimatedCostUsd,
         loopCount,
         stepCount: totalStepCount,
+        turnInputTokens: turnUsage.inputTokens,
+        turnOutputTokens: turnUsage.outputTokens,
+        turnTotalTokens: turnUsage.totalTokens,
+        turnEstimatedCostUsd: estimateCost(rawModelId, turnUsage),
+        turnPostCount: turnUsage.postCount,
       });
 
       // Final safety drain: an artifact could land between the last stream
@@ -1593,9 +1692,33 @@ export async function* runAgentLoop(options: AgentRunOptions): AsyncGenerator<SS
       "I loaded the available data, but the model kept requesting widget data instead of composing an answer.",
     );
 
+  } catch (err) {
+    turnSpan.recordException(err instanceof Error ? err : new Error(String(err)));
+    turnSpan.setStatus({ code: SpanStatusCode.ERROR });
+    throw err;
   } finally {
     // No request-scoped resources to release: in-process SQLite is gone
     // (compute lives in the MCP server's per-conversation Daytona sandbox).
+    //
+    // The span MUST end here rather than at the return: every round-trip exits
+    // this generator through a `return`, and an early return that skipped
+    // `end()` would leak an unended span on exactly the requests worth
+    // looking at. `finally` also covers the consumer abandoning the generator
+    // mid-stream (client disconnect), which calls .return() on it.
+    const turnUsage = turnUsageSoFar();
+    const turnCostUsd = estimateCost(rawModelId, turnUsage);
+    turnSpan.setAttributes({
+      "rita.loop_count": loopCount,
+      "rita.step_count": totalStepCount,
+      "rita.usage.request.input_tokens": cumulativeUsage.inputTokens,
+      "rita.usage.request.output_tokens": cumulativeUsage.outputTokens,
+      "rita.usage.turn.input_tokens": turnUsage.inputTokens,
+      "rita.usage.turn.output_tokens": turnUsage.outputTokens,
+      "rita.usage.turn.total_tokens": turnUsage.totalTokens,
+      "rita.usage.turn.post_count": turnUsage.postCount,
+      ...(turnCostUsd != null ? { "rita.usage.turn.estimated_cost_usd": turnCostUsd } : {}),
+    });
+    turnSpan.end();
   }
 }
 

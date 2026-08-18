@@ -35,7 +35,7 @@ dashboardTitleRouter.post("/v1/generate/dashboard/title", async (c) => {
     `Widgets: ${names.join(", ")}`;
 
   try {
-    const title = await singleShotLlm(prompt, { model });
+    const title = await singleShotLlm(prompt, { model, functionId: "generate.dashboard-title" });
     const cleaned = title.replace(/^["']|["']$/g, "");
     logger.info("dashboard/title generated", { title: cleaned });
     return c.text(cleaned);
