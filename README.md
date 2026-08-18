@@ -365,7 +365,10 @@ PORT                  # Agent port (default 7777)
 OTEL_EXPORTER_OTLP_ENDPOINT         # Enables tracing. Unset = telemetry entirely off (no spans, no cost)
 OTEL_EXPORTER_OTLP_TRACES_ENDPOINT  # Optional — traces-specific endpoint, wins over the above
 OTEL_SERVICE_NAME                   # Optional — service.name on exported spans (default agent-rita)
-OTEL_SERVICE_VERSION                # Optional — service.version on exported spans (default "dev")
+OTEL_SERVICE_VERSION                # Optional — service.version on exported spans. Baked into the
+                                    # published image as the commit sha (Dockerfile GIT_SHA build arg);
+                                    # defaults to "dev" for local builds. This is what attributes a
+                                    # latency or cost regression to a specific deploy.
 OTEL_TRACES_CONSOLE                 # "true" prints spans to stdout — dev only, no collector needed
 OTEL_RECORD_PROMPTS                 # "true" puts prompts, widget rows and SQL results into span
                                     # attributes. Off by default: that is customer data leaving the
