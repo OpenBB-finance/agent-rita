@@ -307,6 +307,25 @@ Model calls are instrumented through the AI SDK's `experimental_telemetry` (the 
 
 The `Token usage` log line carries `conversationId` and `traceId` alongside both the request and turn totals, so usage stays attributable when many chats interleave in one log stream.
 
+#### Connecting Langfuse
+
+Langfuse ingests OTLP directly, so it needs no code — only env vars. Create a project, then:
+
+```bash
+AUTH=$(printf 'pk-lf-...:sk-lf-...' | base64)   # public key : secret key
+```
+
+```
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:3000/api/public/otel
+OTEL_EXPORTER_OTLP_HEADERS=Authorization=Basic <AUTH>,x-langfuse-ingestion-version=4
+```
+
+Do not quote the header value — everything after the first `=` is the value, spaces and commas included.
+
+What maps across without extra work: `session.id` on the turn span groups a chat's turns into one Langfuse session, and the AI SDK's `gen_ai.*` attributes make each model call a generation with model and token usage attached. Langfuse also reads `user.id` if you ever want per-user attribution — the Workspace already sends an `x-openbb-user` header, but that is a privacy decision, so nothing emits it today.
+
+Note that Langfuse maintains its own model pricing. Once it is ingesting, `estimateCost` in `src/lib/token-usage.ts` is a second, less accurate source of truth — it prices every input token at one flat rate and so over-reports any turn served from the provider's prompt cache.
+
 Two known gaps: MCP-server spans orphan (the browser calls that server, not the agent — closing it means adding an `x-agentrita-traceparent` decoration), and browser-side execution time is only visible as the gap between requests. Auto-instrumentation is deliberately absent: `@opentelemetry/instrumentation-*` patches Node's module registry and will not see `Bun.serve` or `fetch`.
 
 ### Path A vs Path B

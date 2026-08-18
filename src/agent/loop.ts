@@ -84,6 +84,7 @@ import {
   aiTelemetry,
 } from "../lib/telemetry";
 import { context as otelContext, trace as otelTrace, SpanStatusCode, type Span } from "@opentelemetry/api";
+import { ATTR_SESSION_ID } from "@opentelemetry/semantic-conventions/incubating";
 
 const logger = getLogger(["app", "agent", "loop"]);
 
@@ -578,6 +579,11 @@ export async function* runAgentLoop(options: AgentRunOptions): AsyncGenerator<SS
     {
       attributes: {
         "rita.conversation_id": conversationId || "(missing)",
+        // OTel semconv `session.id`, which trace backends (Langfuse among
+        // them) read to group a chat's turns into one session. Omitted rather
+        // than placeholdered when absent: a literal "(missing)" would collapse
+        // every anonymous turn from every user into one bogus shared session.
+        ...(conversationId ? { [ATTR_SESSION_ID]: conversationId } : {}),
         "rita.model": rawModelId,
         "rita.reboot": isRebootToolTurn,
         "rita.reboot_function": isRebootToolTurn ? lastMessage.function : "",

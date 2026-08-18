@@ -217,6 +217,22 @@ describe("turn tracing across re-POSTs", () => {
     expect(attrs["rita.conversation_id"]).toBe("t-usage-span");
   });
 
+  it("tags the turn span with the standard session.id attribute", async () => {
+    // `session.id` is OTel semconv, not a vendor key — but it is also what
+    // Langfuse reads to group a chat's turns into one session. Emitting the
+    // standard name gets that grouping without coupling to a backend.
+    await collectGenerator(firstRequest("chat-abc"));
+    expect(turnSpans()[0].attributes["session.id"]).toBe("chat-abc");
+  });
+
+  it("omits session.id entirely when there is no conversation id", async () => {
+    // A placeholder like "(missing)" would collapse every anonymous turn from
+    // every user into one bogus shared session — worse than no grouping.
+    await collectGenerator(firstRequest(""));
+    expect(turnSpans()[0].attributes).not.toHaveProperty("session.id");
+    expect(turnSpans()[0].attributes["rita.conversation_id"]).toBe("(missing)");
+  });
+
   it("ends the span even when the request exits early through a round-trip return", async () => {
     // Every round-trip leaves runAgentLoop via `return`, not by running off the
     // end — an end() outside `finally` would leak a span on exactly these.
