@@ -322,6 +322,8 @@ OTEL_EXPORTER_OTLP_HEADERS=Authorization=Basic <AUTH>,x-langfuse-ingestion-versi
 
 Do not quote the header value — everything after the first `=` is the value, spaces and commas included.
 
+Endpoint semantics follow the OTLP spec: `OTEL_EXPORTER_OTLP_ENDPOINT` is a **base** and `/v1/traces` is appended to it, while `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` is used verbatim. This matters for Langfuse — on a self-hosted v4 deployment `POST /api/public/otel` returns the app shell (404) and only `/api/public/otel/v1/traces` ingests.
+
 What maps across without extra work: `session.id` on the turn span groups a chat's turns into one Langfuse session, and the AI SDK's `gen_ai.*` attributes make each model call a generation with model and token usage attached. Langfuse also reads `user.id` if you ever want per-user attribution — the Workspace already sends an `x-openbb-user` header, but that is a privacy decision, so nothing emits it today.
 
 Note that Langfuse maintains its own model pricing. Once it is ingesting, `estimateCost` in `src/lib/token-usage.ts` is a second, less accurate source of truth — it prices every input token at one flat rate and so over-reports any turn served from the provider's prompt cache.
@@ -381,8 +383,9 @@ OLLAMA_BASE_URL       # Ollama endpoint (default http://localhost:11434/api)
 DEFAULT_MODEL         # Fallback model when a request omits one (default openai:gpt-4o)
 PORT                  # Agent port (default 7777)
 
-OTEL_EXPORTER_OTLP_ENDPOINT         # Enables tracing. Unset = telemetry entirely off (no spans, no cost)
-OTEL_EXPORTER_OTLP_TRACES_ENDPOINT  # Optional — traces-specific endpoint, wins over the above
+OTEL_EXPORTER_OTLP_ENDPOINT         # Enables tracing. Base URL — /v1/traces is appended per the OTLP
+                                    # spec. Unset = telemetry entirely off (no spans, no cost)
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT  # Optional — exact traces URL, used verbatim, wins over the above
 OTEL_SERVICE_NAME                   # Optional — service.name on exported spans (default agent-rita)
 OTEL_SERVICE_VERSION                # Optional — service.version on exported spans. Baked into the
                                     # published image as the commit sha (Dockerfile GIT_SHA build arg);

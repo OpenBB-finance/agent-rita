@@ -24,11 +24,31 @@ export const TRACER_NAME = "agent-rita";
  * spans. `formatTraceparent` returns null for the invalid context, so the
  * disabled path also produces no `extra_state.traceparent`.
  */
+/**
+ * Resolve the URL traces are POSTed to, per the OTLP spec:
+ *
+ * - `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` is signal-specific and used verbatim.
+ * - `OTEL_EXPORTER_OTLP_ENDPOINT` is a BASE; the signal path `/v1/traces` is
+ *   appended to it.
+ *
+ * Treating the base as an exact URL 404s against any backend whose base path
+ * is not itself a trace-ingestion route — e.g. self-hosted Langfuse, where
+ * `/api/public/otel` returns the app shell and only `/api/public/otel/v1/traces`
+ * ingests. Exported for tests.
+ */
+export function resolveTracesUrl(
+  base: string | undefined,
+  signalSpecific: string | undefined,
+): string | undefined {
+  if (signalSpecific) return signalSpecific;
+  if (!base) return undefined;
+  return `${base.replace(/\/+$/, "")}/v1/traces`;
+}
+
 function otlpEndpoint(): string | undefined {
-  return (
-    process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT ||
-    process.env.OTEL_EXPORTER_OTLP_ENDPOINT ||
-    undefined
+  return resolveTracesUrl(
+    process.env.OTEL_EXPORTER_OTLP_ENDPOINT || undefined,
+    process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT || undefined,
   );
 }
 

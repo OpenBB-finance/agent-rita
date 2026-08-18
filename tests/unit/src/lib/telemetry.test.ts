@@ -1,5 +1,6 @@
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import {
+  resolveTracesUrl,
   parseTraceparent,
   formatTraceparent,
   traceIdForLogs,
@@ -75,6 +76,46 @@ describe("formatTraceparent", () => {
   });
 });
 
+describe("resolveTracesUrl", () => {
+  // OTLP spec: the generic endpoint is a BASE that gets the signal path
+  // appended; the signal-specific one is used verbatim. Collapsing the two
+  // silently 404s against any backend whose base path is not itself a
+  // trace-ingestion route (Langfuse self-hosted, for one).
+  it("appends /v1/traces to the generic base endpoint", () => {
+    expect(resolveTracesUrl("http://localhost:3000/api/public/otel", undefined)).toBe(
+      "http://localhost:3000/api/public/otel/v1/traces",
+    );
+  });
+
+  it("does not double the slash when the base has a trailing one", () => {
+    expect(resolveTracesUrl("http://localhost:3000/api/public/otel/", undefined)).toBe(
+      "http://localhost:3000/api/public/otel/v1/traces",
+    );
+  });
+
+  it("uses the traces-specific endpoint verbatim", () => {
+    expect(
+      resolveTracesUrl(undefined, "http://localhost:3000/api/public/otel/v1/traces"),
+    ).toBe("http://localhost:3000/api/public/otel/v1/traces");
+  });
+
+  it("does not append to the traces-specific endpoint even if it looks like a base", () => {
+    expect(resolveTracesUrl(undefined, "http://collector:4318/custom")).toBe(
+      "http://collector:4318/custom",
+    );
+  });
+
+  it("prefers the traces-specific endpoint over the generic one", () => {
+    expect(
+      resolveTracesUrl("http://localhost:3000/api/public/otel", "http://other:4318/v1/traces"),
+    ).toBe("http://other:4318/v1/traces");
+  });
+
+  it("returns undefined when neither is set", () => {
+    expect(resolveTracesUrl(undefined, undefined)).toBeUndefined();
+  });
+});
+
 describe("traceIdForLogs", () => {
   it("returns the trace id when telemetry is recording", () => {
     expect(traceIdForLogs({ traceId: "4bf92f3577b34da6a3ce929d0e0e4736" })).toBe(
@@ -90,15 +131,50 @@ describe("traceIdForLogs", () => {
 });
 
 describe("aiTelemetry", () => {
-  it("is disabled when telemetry is not configured", () => {
-    // No OTEL_EXPORTER_OTLP_ENDPOINT in the test env.
+  // These assertions are about configuration, so the configuration is set
+  // explicitly rather than inherited. Reading ambient env made the suite pass
+  // or fail based on whether the developer happened to have an exporter
+  // configured in .env.
+  const OTEL_KEYS = [
+    "OTEL_EXPORTER_OTLP_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+    "OTEL_TRACES_CONSOLE",
+    "OTEL_RECORD_PROMPTS",
+  ] as const;
+  let saved: Record<string, string | undefined> = {};
+
+  beforeEach(() => {
+    saved = Object.fromEntries(OTEL_KEYS.map((k) => [k, process.env[k]]));
+    for (const k of OTEL_KEYS) delete process.env[k];
+  });
+
+  afterEach(() => {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  it("is disabled when no exporter is configured", () => {
     expect(aiTelemetry("agent.loop", {}).isEnabled).toBe(false);
+  });
+
+  it("is enabled once an exporter is configured", () => {
+    process.env.OTEL_EXPORTER_OTLP_ENDPOINT = "http://localhost:3000/api/public/otel";
+    expect(aiTelemetry("agent.loop", {}).isEnabled).toBe(true);
   });
 
   it("does not record prompts or completions by default", () => {
     const t = aiTelemetry("agent.loop", { conversation_id: "abc" });
     expect(t.recordInputs).toBe(false);
     expect(t.recordOutputs).toBe(false);
+  });
+
+  it("records prompts only when explicitly opted in", () => {
+    process.env.OTEL_RECORD_PROMPTS = "true";
+    const t = aiTelemetry("agent.loop", {});
+    expect(t.recordInputs).toBe(true);
+    expect(t.recordOutputs).toBe(true);
   });
 
   it("passes functionId and metadata through", () => {
