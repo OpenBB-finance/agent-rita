@@ -103,10 +103,18 @@ describe("workspace bridge — generic dispatch", () => {
     expect(data.input_arguments).toEqual(args);
     // turn_usage rides every round-trip emission so the next request can add
     // to it — a turn's token total is otherwise unrecoverable once this
-    // generator exits. The mock LLM reports 1 in / 1 out per call.
+    // generator exits. The mock LLM reports 1 in / 1 out per call and no cache
+    // details, so the cache counters stay at zero.
     expect(data.extra_state).toEqual({
       copilot_function_call_arguments: args,
-      turn_usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2, postCount: 1 },
+      turn_usage: {
+        inputTokens: 1,
+        cachedInputTokens: 0,
+        cacheWriteTokens: 0,
+        outputTokens: 1,
+        totalTokens: 2,
+        postCount: 1,
+      },
     });
     expect(findFunctionCall(events, "execute_agent_tool")).toBeUndefined();
   });

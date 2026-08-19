@@ -16,8 +16,15 @@ import {
 } from "@opentelemetry/sdk-trace-base";
 import { runAgentLoop } from "../../../src/agent/loop";
 import { parseTraceparent } from "../../../src/lib/telemetry";
+import type { TurnUsage } from "../../../src/lib/token-usage";
 import type { QueryRequest, SSEEvent, ToolMessage } from "../../../src/protocol/types";
-import { llmCallsTool, llmEmitsText, makeMockLlm } from "../../helpers/mock-llm";
+import {
+  llmCallsTool,
+  llmEmitsText,
+  makeMockLlm,
+  makeSpyMockLlm,
+  type SpyMockLlm,
+} from "../../helpers/mock-llm";
 import { collectGenerator } from "../../helpers/sse-reader";
 import { clearAllModuleState } from "../../helpers/clear-state";
 
@@ -48,12 +55,8 @@ beforeEach(() => {
 
 interface ExtraState {
   traceparent?: string;
-  turn_usage?: {
-    inputTokens: number;
-    outputTokens: number;
-    totalTokens: number;
-    postCount: number;
-  };
+  turn_usage?: TurnUsage;
+  timezone?: string;
 }
 
 function bridgeExtraState(events: SSEEvent[]): ExtraState {
@@ -248,6 +251,8 @@ describe("turn tracing — untrusted echoed state", () => {
     const afterFirst = bridgeExtraState(first).turn_usage;
     expect(afterFirst).toEqual({
       inputTokens: 1,
+      cachedInputTokens: 0,
+      cacheWriteTokens: 0,
       outputTokens: 1,
       totalTokens: 2,
       postCount: 1,
@@ -295,5 +300,142 @@ describe("turn tracing — untrusted echoed state", () => {
     );
     expect(events.length).toBeGreaterThan(0);
     expect(turnSpans()[0].attributes["rita.usage.turn.post_count"]).toBe(1);
+  });
+});
+
+/**
+ * The prompt-cache regression, end to end.
+ *
+ * The Workspace sends `timezone` on the first POST of a turn and not on the
+ * bridge re-POST. `buildDateSection` appended its "User timezone" line only
+ * when it had a value, so the system prompt alternated between two byte
+ * strings across a turn's POSTs — measured against a live OpenAI trace on
+ * 2026-08-19 as 21960 vs 21928 bytes, identical for the first 99.9%, each
+ * variant maintaining its own prompt-cache lineage.
+ */
+describe("turn tracing — timezone carries across the round-trip", () => {
+  const TZ = "America/New_York";
+
+  function systemPromptOf(spy: SpyMockLlm): string {
+    const msgs = spy.calls[0]?.messages as Array<{ role: string; content: unknown }>;
+    expect(msgs?.[0]?.role).toBe("system");
+    const content = msgs[0].content;
+    return typeof content === "string" ? content : JSON.stringify(content);
+  }
+
+  function firstPost(spy: SpyMockLlm, timezone?: string) {
+    return runAgentLoop({
+      request: {
+        messages: [{ role: "human", content: "make me tabs" }],
+        workspace_options: ["generative-ui"],
+        ...(timezone ? { timezone } : {}),
+      } as unknown as QueryRequest,
+      rawModelId: "openai:gpt-4o-mini",
+      model: spy.model,
+      allWidgets: [],
+      workspaceState: null,
+      generativeUiEnabled: true,
+      conversationId: "t-tz",
+    });
+  }
+
+  /** The browser's re-POST: carries no `timezone`, only the echoed extra_state. */
+  function bridgeRePost(spy: SpyMockLlm, extraState: Record<string, unknown>) {
+    const toolMsg: ToolMessage = {
+      role: "tool",
+      function: "manage_navigation_bar",
+      input_arguments: {},
+      extra_state: extraState,
+      data: [
+        { ok: true, command: "manage_navigation_bar", request_id: null, message: "Tabs created." },
+      ] as unknown as ToolMessage["data"],
+    };
+    return runAgentLoop({
+      request: {
+        messages: [{ role: "human", content: "make me tabs" }, toolMsg],
+        workspace_options: ["generative-ui"],
+      } as unknown as QueryRequest,
+      rawModelId: "openai:gpt-4o-mini",
+      model: spy.model,
+      allWidgets: [],
+      workspaceState: null,
+      generativeUiEnabled: true,
+      conversationId: "t-tz",
+    });
+  }
+
+  it("echoes the timezone forward on every round-trip emission", async () => {
+    const spy = makeSpyMockLlm(
+      llmCallsTool("manage_navigation_bar", {
+        operation: "create" as const,
+        tabs: [{ name: "AAPL Analysis" }],
+      }),
+    );
+    const events = await collectGenerator(firstPost(spy, TZ));
+    expect(bridgeExtraState(events).timezone).toBe(TZ);
+  });
+
+  it("keeps the system prompt byte-identical across the round-trip", async () => {
+    const firstSpy = makeSpyMockLlm(
+      llmCallsTool("manage_navigation_bar", {
+        operation: "create" as const,
+        tabs: [{ name: "AAPL Analysis" }],
+      }),
+    );
+    const first = await collectGenerator(firstPost(firstSpy, TZ));
+
+    const secondSpy = makeSpyMockLlm(llmEmitsText("Done — tabs created."));
+    await collectGenerator(
+      bridgeRePost(secondSpy, bridgeExtraState(first) as Record<string, unknown>),
+    );
+
+    expect(systemPromptOf(secondSpy)).toBe(systemPromptOf(firstSpy));
+  });
+
+  // The correctness half: without the echo the re-POST fell back to UTC, which
+  // is the wrong calendar day for a user west of Greenwich late in their day.
+  it("renders the re-POST date in the user's zone, not UTC", async () => {
+    const firstSpy = makeSpyMockLlm(
+      llmCallsTool("manage_navigation_bar", {
+        operation: "create" as const,
+        tabs: [{ name: "AAPL Analysis" }],
+      }),
+    );
+    const first = await collectGenerator(firstPost(firstSpy, TZ));
+
+    const secondSpy = makeSpyMockLlm(llmEmitsText("Done."));
+    await collectGenerator(
+      bridgeRePost(secondSpy, bridgeExtraState(first) as Record<string, unknown>),
+    );
+
+    expect(systemPromptOf(secondSpy)).toContain(`User timezone: ${TZ}`);
+    expect(systemPromptOf(secondSpy)).not.toContain("User timezone: UTC");
+  });
+
+  // A turn that never had a timezone must still produce ONE stable prompt.
+  it("stays stable across the round-trip when no timezone is ever supplied", async () => {
+    const firstSpy = makeSpyMockLlm(
+      llmCallsTool("manage_navigation_bar", {
+        operation: "create" as const,
+        tabs: [{ name: "AAPL Analysis" }],
+      }),
+    );
+    const first = await collectGenerator(firstPost(firstSpy));
+
+    const secondSpy = makeSpyMockLlm(llmEmitsText("Done."));
+    await collectGenerator(
+      bridgeRePost(secondSpy, bridgeExtraState(first) as Record<string, unknown>),
+    );
+
+    expect(systemPromptOf(secondSpy)).toBe(systemPromptOf(firstSpy));
+    expect(systemPromptOf(secondSpy)).toContain("User timezone: UTC");
+  });
+
+  // extra_state round-trips through the browser and is untrusted.
+  it("falls back to UTC on a corrupted echoed timezone instead of failing the turn", async () => {
+    const spy = makeSpyMockLlm(llmEmitsText("Done."));
+    const events = await collectGenerator(bridgeRePost(spy, { timezone: "Not/AZone" }));
+    expect(events.length).toBeGreaterThan(0);
+    expect(systemPromptOf(spy)).toContain("User timezone: UTC");
   });
 });

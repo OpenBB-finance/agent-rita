@@ -69,9 +69,11 @@ import { makeCreateAppTool } from "./tools/app-artifact";
 import {
   flattenUsage,
   accumulateUsage,
+  cacheHitRate,
   estimateCost,
   readTurnUsage,
   ZERO_TURN_USAGE,
+  ZERO_USAGE_COUNTS,
 } from "../lib/token-usage";
 import { getLogger } from "../lib/logger";
 import { providerOptionsFor } from "../lib/providers";
@@ -574,6 +576,11 @@ export async function* runAgentLoop(options: AgentRunOptions): AsyncGenerator<SS
   // while the corrupt string kept riding extra_state, so every later request
   // would fail to parse it too and the turn would shatter permanently.
   const inheritedRoot = isRebootToolTurn ? parseTraceparent(rebootExtra.traceparent) : null;
+  // The Workspace sends `timezone` on the first POST of a turn only, so a
+  // re-POST has to recover it from extra_state or the date section silently
+  // renders in UTC — a different system prompt AND, near midnight, a different
+  // day. Same echo-forward pattern as `traceparent`.
+  const turnTimezone = request.timezone ?? (isRebootToolTurn ? rebootExtra.timezone : undefined);
   const turnSpan: Span = getTracer().startSpan(
     "rita.turn.request",
     {
@@ -608,7 +615,7 @@ export async function* runAgentLoop(options: AgentRunOptions): AsyncGenerator<SS
   // Declared out here (not inside the try) so the `finally` that ends the turn
   // span can read the final counts on every exit path, including the early
   // returns each round-trip takes.
-  let cumulativeUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+  let cumulativeUsage = { ...ZERO_USAGE_COUNTS };
   let totalStepCount = 0;
   let loopCount = 0;
 
@@ -621,6 +628,8 @@ export async function* runAgentLoop(options: AgentRunOptions): AsyncGenerator<SS
   function turnUsageSoFar() {
     return {
       inputTokens: priorTurnUsage.inputTokens + cumulativeUsage.inputTokens,
+      cachedInputTokens: priorTurnUsage.cachedInputTokens + cumulativeUsage.cachedInputTokens,
+      cacheWriteTokens: priorTurnUsage.cacheWriteTokens + cumulativeUsage.cacheWriteTokens,
       outputTokens: priorTurnUsage.outputTokens + cumulativeUsage.outputTokens,
       totalTokens: priorTurnUsage.totalTokens + cumulativeUsage.totalTokens,
       postCount: priorTurnUsage.postCount + 1,
@@ -647,6 +656,7 @@ export async function* runAgentLoop(options: AgentRunOptions): AsyncGenerator<SS
       workspaceState,
       codeExecutionAvailable: initialCodeExecutionAvailable,
       mcpToolEntries: mcpToolsResult?.entries,
+      timezone: turnTimezone,
     });
 
     // Eager URL prefetch (workspace caps to 4). Failures are swallowed per-URL
@@ -730,6 +740,7 @@ export async function* runAgentLoop(options: AgentRunOptions): AsyncGenerator<SS
       if (documentsShipped.size > 0) extraState.documents_shipped = [...documentsShipped];
       if (loadedSkillSlugs.size > 0) extraState.loaded_skill_slugs = [...loadedSkillSlugs];
       if (turnTraceparent) extraState.traceparent = turnTraceparent;
+      if (turnTimezone) extraState.timezone = turnTimezone;
       extraState.turn_usage = turnUsageSoFar();
       return extraState;
     }
@@ -1357,10 +1368,19 @@ export async function* runAgentLoop(options: AgentRunOptions): AsyncGenerator<SS
         traceId: traceIdForLogs(turnSpanContext),
         modelId: rawModelId,
         ...cumulativeUsage,
+        // The prefix is ~8k tokens of system prompt plus tool definitions,
+        // re-sent on every step and every re-POST. `cacheHitRate` is what says
+        // whether it is actually being served from cache; a turn where it
+        // drops instead of climbing means `buildSystemPrompt` produced a
+        // different string between calls.
+        cacheHitRate: cacheHitRate(cumulativeUsage),
         estimatedCostUsd,
         loopCount,
         stepCount: totalStepCount,
         turnInputTokens: turnUsage.inputTokens,
+        turnCachedInputTokens: turnUsage.cachedInputTokens,
+        turnCacheWriteTokens: turnUsage.cacheWriteTokens,
+        turnCacheHitRate: cacheHitRate(turnUsage),
         turnOutputTokens: turnUsage.outputTokens,
         turnTotalTokens: turnUsage.totalTokens,
         turnEstimatedCostUsd: estimateCost(rawModelId, turnUsage),
@@ -1713,12 +1733,22 @@ export async function* runAgentLoop(options: AgentRunOptions): AsyncGenerator<SS
     // mid-stream (client disconnect), which calls .return() on it.
     const turnUsage = turnUsageSoFar();
     const turnCostUsd = estimateCost(rawModelId, turnUsage);
+    // Deliberately namespaced `rita.*` rather than `gen_ai.usage.*`: the AI SDK
+    // already reports per-call usage on its own child spans, and Langfuse sums
+    // those. Publishing the roll-up under the semconv names would double-count
+    // the whole turn against its own children.
     turnSpan.setAttributes({
       "rita.loop_count": loopCount,
       "rita.step_count": totalStepCount,
       "rita.usage.request.input_tokens": cumulativeUsage.inputTokens,
+      "rita.usage.request.cached_input_tokens": cumulativeUsage.cachedInputTokens,
+      "rita.usage.request.cache_write_tokens": cumulativeUsage.cacheWriteTokens,
+      "rita.usage.request.cache_hit_rate": cacheHitRate(cumulativeUsage),
       "rita.usage.request.output_tokens": cumulativeUsage.outputTokens,
       "rita.usage.turn.input_tokens": turnUsage.inputTokens,
+      "rita.usage.turn.cached_input_tokens": turnUsage.cachedInputTokens,
+      "rita.usage.turn.cache_write_tokens": turnUsage.cacheWriteTokens,
+      "rita.usage.turn.cache_hit_rate": cacheHitRate(turnUsage),
       "rita.usage.turn.output_tokens": turnUsage.outputTokens,
       "rita.usage.turn.total_tokens": turnUsage.totalTokens,
       "rita.usage.turn.post_count": turnUsage.postCount,

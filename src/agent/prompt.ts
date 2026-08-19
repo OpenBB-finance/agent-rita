@@ -272,29 +272,57 @@ function describeSkillsCatalog(catalog: SkillCatalogEntry[]): string {
   );
 }
 
-function formatCurrentDate(now: Date, timezone?: string): string {
-  const opts: Intl.DateTimeFormatOptions = {
+const FALLBACK_TIMEZONE = "UTC";
+
+/**
+ * The IANA zone the date section will actually use, falling back to UTC for a
+ * missing OR unparseable value.
+ *
+ * Resolved once and used for BOTH the formatted date and the "User timezone"
+ * line. Printing a zone that `Intl` rejected would tell the model the date was
+ * rendered somewhere it was not.
+ *
+ * The input reaches here from `extra_state` on a re-POST, so it is untrusted
+ * browser-echoed data — same posture as `parseTraceparent`: never throw.
+ */
+export function resolveTimezone(timezone: string | undefined): string {
+  if (!timezone) return FALLBACK_TIMEZONE;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: timezone });
+    return timezone;
+  } catch {
+    return FALLBACK_TIMEZONE;
+  }
+}
+
+function formatCurrentDate(now: Date, timezone: string): string {
+  return new Intl.DateTimeFormat("en-US", {
     weekday: "long",
     year: "numeric",
     month: "long",
     day: "numeric",
-  };
-  try {
-    return new Intl.DateTimeFormat("en-US", { ...opts, timeZone: timezone || "UTC" }).format(now);
-  } catch {
-    // Invalid IANA timezone string from the client — fall back to UTC.
-    return new Intl.DateTimeFormat("en-US", { ...opts, timeZone: "UTC" }).format(now);
-  }
+    timeZone: timezone,
+  }).format(now);
 }
 
-// Date-only (no time-of-day) so the cached system-prompt prefix is stable within a conversation-day.
-function buildDateSection(request: QueryRequest): string {
-  let section =
-    `CURRENT DATE: ${formatCurrentDate(new Date(), request.timezone)}. This is today — it is authoritative. ` +
+// Date-only (no time-of-day) so the cached system-prompt prefix is stable
+// within a conversation-day.
+//
+// The timezone line is UNCONDITIONAL. It used to be appended only when the
+// request carried a timezone, and the Workspace does not echo `timezone` on a
+// round-trip re-POST — so the system prompt grew a 32-byte tail on fresh POSTs
+// and lost it on reboot POSTs, alternating between two prefixes and splitting
+// the prompt cache in two (measured 2026-08-19: 21960 vs 21928 bytes,
+// identical for the first 99.9%). The loop now carries the zone forward
+// through extra_state; emitting the line either way keeps the section's SHAPE
+// fixed even on the requests where the value is genuinely unknown.
+function buildDateSection(timezone: string): string {
+  return (
+    `CURRENT DATE: ${formatCurrentDate(new Date(), timezone)}. This is today — it is authoritative. ` +
     "Your training data ends earlier, so for anything time-sensitive (recent events, news, \"latest\"/\"current\"/\"this year\", or date math) rely on this date rather than your training assumptions. " +
-    "When you call web_search for recent information, use the year shown here.";
-  if (request.timezone) section += `\nUser timezone: ${request.timezone}`;
-  return section;
+    "When you call web_search for recent information, use the year shown here." +
+    `\nUser timezone: ${timezone}`
+  );
 }
 
 export interface PromptOptions {
@@ -310,6 +338,12 @@ export interface PromptOptions {
   codeExecutionAvailable?: boolean;
   /** Registered MCP tools from makeMcpTools — the only source the prompt may advertise. */
   mcpToolEntries?: McpToolEntry[];
+  /**
+   * Timezone for the date section, carried across the turn's re-POSTs by the
+   * loop. Takes precedence over `request.timezone`, which the Workspace only
+   * sends on the first POST.
+   */
+  timezone?: string;
 }
 
 export function buildSystemPrompt(
@@ -369,7 +403,7 @@ export function buildSystemPrompt(
     sections.push(options.suggestionsVia === "tool" ? SUGGESTIONS_TOOL_PROMPT : SUGGESTIONS_PROMPT);
   }
 
-  sections.push(buildDateSection(request));
+  sections.push(buildDateSection(resolveTimezone(options?.timezone ?? request.timezone)));
 
   return sections.join("\n");
 }
