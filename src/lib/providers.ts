@@ -34,6 +34,31 @@ export const PROVIDER_OPTIONS: Record<string, Record<string, JSONValue>> = {
   openai: { store: false, include: ["reasoning.encrypted_content"] },
 };
 
+/**
+ * Per-request provider options carrying a prompt cache key.
+ *
+ * OpenAI serves prompt caching from whichever machine recently handled a
+ * matching prefix, and routes requests there by `prompt_cache_key`. Without
+ * one, routing is effectively arbitrary, so a shared prefix only caches by
+ * luck — measured on this agent: identical back-to-back requests cached 99%,
+ * while any variation at all (even just a different user message) cached 0%.
+ *
+ * Keyed on `conversationId`, which pins one chat's requests to one machine.
+ * That is where the win is: a single turn round-trips several times over the
+ * same ~8k-token system-prompt-plus-tools prefix. It deliberately gives up
+ * cross-chat reuse — a coarser key would share more prefixes but OpenAI asks
+ * that traffic per key stay near 15 req/min, which a per-chat key can't breach.
+ */
+export function providerOptionsFor(
+  cacheKey: string | undefined,
+): Record<string, Record<string, JSONValue>> {
+  if (!cacheKey) return PROVIDER_OPTIONS;
+  return {
+    ...PROVIDER_OPTIONS,
+    openai: { ...PROVIDER_OPTIONS.openai, promptCacheKey: cacheKey },
+  };
+}
+
 const openaiKey = process.env.OPENAI_API_KEY;
 if (openaiKey) {
   const openai = createOpenAI({ apiKey: openaiKey });

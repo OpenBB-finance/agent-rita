@@ -74,7 +74,7 @@ import {
   ZERO_TURN_USAGE,
 } from "../lib/token-usage";
 import { getLogger } from "../lib/logger";
-import { PROVIDER_OPTIONS } from "../lib/providers";
+import { providerOptionsFor } from "../lib/providers";
 import {
   getTracer,
   parseTraceparent,
@@ -1050,7 +1050,7 @@ export async function* runAgentLoop(options: AgentRunOptions): AsyncGenerator<SS
           ...(mcpToolsResult ? [mcpToolsResult.stopCondition] : []),
           stepCountIs(15),
         ],
-        providerOptions: PROVIDER_OPTIONS,
+        providerOptions: providerOptionsFor(conversationId || undefined),
         abortSignal: AbortSignal.timeout(LLM_STREAM_TIMEOUT_MS),
         onError: ({ error }) => logger.error("streamText error part", { loopIdx, error }),
         experimental_telemetry: aiTelemetry("agent.loop", {
