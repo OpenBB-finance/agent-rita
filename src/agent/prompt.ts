@@ -117,29 +117,42 @@ const CODE_EXECUTION_UNAVAILABLE_PROMPT =
   "PYTHON CODE EXECUTION:\n" +
   "- execute_code is not available this turn. Do not call it; use execute_sql, peek_table, peek_column_values, and create_artifact instead.\n";
 
-const SUGGESTIONS_PROMPT =
-  "FOLLOW-UP SUGGESTIONS:\n" +
-  "At the end of every response, generate 2-3 short follow-up questions the user might want to ask next. " +
+const SUGGESTIONS_RULES =
+  "Write each one as the USER's next message to you — an instruction or question in their voice " +
+  "(\"Compare the other two events\"), never in yours (\"Would you like me to...\"). " +
+  "Base them on the answer you just wrote: they continue this conversation, they do not restart it. " +
+  "In priority order:\n" +
+  "1. If your answer ended by asking the user something or offering options, the suggestions ARE the answers to that " +
+  "question — one per option you offered, in the order you offered them. This outranks every other rule.\n" +
+  "2. If your answer was blocked or incomplete (data not loaded, ticker ambiguous, a selection needed), the first " +
+  "suggestion is the exact action that unblocks it.\n" +
+  "3. Otherwise, suggest the natural next step deeper into what you just showed.\n" +
+  "Never suggest something you already did in this response, and never repeat a message the user has already sent. " +
   "CRITICAL: suggestions MUST be answerable using the widgets and data sources listed above (added to context, on the dashboard, or connected). " +
   "Never suggest questions that require data you don't have access to. " +
-  "If the user has Financial Statements and Company News widgets, suggest questions about those — not about unrelated topics. " +
-  "For the first message or when no widgets are available, suggest general questions about what data the user has connected or how you can help explore their workspace. " +
-  "Wrap them in a <suggestions> block:\n" +
-  "<suggestions>\n<suggestion>Summarize the data in my dashboard widgets</suggestion>\n" +
-  "<suggestion>What data sources do I have connected?</suggestion>\n</suggestions>\n" +
-  "Keep each suggestion under 80 characters. Always include the suggestions block, even for short answers.\n";
+  "For the first message, or when no widgets are available, suggest general questions about what data the user has " +
+  "connected or how you can help explore their workspace. " +
+  "Keep each suggestion under 80 characters.\n";
+
+const SUGGESTIONS_PROMPT =
+  "FOLLOW-UP SUGGESTIONS:\n" +
+  "End every response with 2-3 short follow-up questions the user might want to ask next. " +
+  SUGGESTIONS_RULES +
+  "Wrap them in a <suggestions> block. For example, if your answer ended with \"Would you like me to compare the " +
+  "other two events, or explain which events can be compared?\", the block is:\n" +
+  "<suggestions>\n<suggestion>Compare the other two events</suggestion>\n" +
+  "<suggestion>Explain which events can be compared</suggestion>\n</suggestions>\n" +
+  "Always include the suggestions block, even for short answers.\n";
 
 // SPIKE variant (suggestionsVia: "tool"). Same guidance, but routes suggestions
 // through the suggest_followups tool instead of an inline block — used only to
 // measure real-model tool-call reliability vs. the trained inline default.
 const SUGGESTIONS_TOOL_PROMPT =
   "FOLLOW-UP SUGGESTIONS:\n" +
-  "At the end of every response, call the suggest_followups tool with 2-3 short follow-up questions the user might want to ask next. " +
-  "CRITICAL: suggestions MUST be answerable using the widgets and data sources listed above (added to context, on the dashboard, or connected). " +
-  "Never suggest questions that require data you don't have access to. " +
-  "If the user has Financial Statements and Company News widgets, suggest questions about those — not about unrelated topics. " +
-  "For the first message or when no widgets are available, suggest general questions about what data the user has connected or how you can help explore their workspace. " +
-  "Keep each suggestion under 80 characters. Always call suggest_followups, even for short answers — do not write the suggestions as plain text.\n";
+  "At the end of every response, call the suggest_followups tool with 2-3 short follow-up questions the user might " +
+  "want to ask next. " +
+  SUGGESTIONS_RULES +
+  "Always call suggest_followups, even for short answers — do not write the suggestions as plain text.\n";
 
 function describeParam(p: WidgetParam): string {
   const value = p.current_value ?? p.default_value;
