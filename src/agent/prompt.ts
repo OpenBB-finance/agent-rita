@@ -122,8 +122,13 @@ const SUGGESTIONS_RULES =
   "(\"Compare the other two events\"), never in yours (\"Would you like me to...\"). " +
   "Base them on the answer you just wrote: they continue this conversation, they do not restart it. " +
   "In priority order:\n" +
-  "1. If your answer ended by asking the user something or offering options, the suggestions ARE the answers to that " +
-  "question — one per option you offered, in the order you offered them. This outranks every other rule.\n" +
+  "1. If your answer ended by asking the user anything, the suggestions ARE the answers to it. " +
+  "This outranks every other rule. Assume the user says yes — never suggest declining or deferring.\n" +
+  "   - Offered to DO something (\"Would you like me to check X?\") → the FIRST suggestion accepts it, " +
+  "reusing your own words for the action: \"Check X\". Never swap the offer for a different request, and never " +
+  "phrase it as if the data is already confirmed to exist.\n" +
+  "   - Also listed choices → the remaining suggestions take one choice each, in the order you listed them.\n" +
+  "   - Asked several things at once → answer the outermost question first, then the narrower ones.\n" +
   "2. If your answer was blocked or incomplete (data not loaded, ticker ambiguous, a selection needed), the first " +
   "suggestion is the exact action that unblocks it.\n" +
   "3. Otherwise, suggest the natural next step deeper into what you just showed.\n" +
@@ -138,10 +143,12 @@ const SUGGESTIONS_PROMPT =
   "FOLLOW-UP SUGGESTIONS:\n" +
   "End every response with 2-3 short follow-up questions the user might want to ask next. " +
   SUGGESTIONS_RULES +
-  "Wrap them in a <suggestions> block. For example, if your answer ended with \"Would you like me to compare the " +
-  "other two events, or explain which events can be compared?\", the block is:\n" +
-  "<suggestions>\n<suggestion>Compare the other two events</suggestion>\n" +
-  "<suggestion>Explain which events can be compared</suggestion>\n</suggestions>\n" +
+  "Wrap them in a <suggestions> block. For example, if your answer ended with \"Would you like me to check the " +
+  "Insider Trading widget for executive holdings? If so, do you want institutional or insider holdings?\", " +
+  "the block is:\n" +
+  "<suggestions>\n<suggestion>Check the Insider Trading widget for executive holdings</suggestion>\n" +
+  "<suggestion>Use insider (named executive) holdings</suggestion>\n" +
+  "<suggestion>Use institutional holdings instead</suggestion>\n</suggestions>\n" +
   "Always include the suggestions block, even for short answers.\n";
 
 // SPIKE variant (suggestionsVia: "tool"). Same guidance, but routes suggestions
