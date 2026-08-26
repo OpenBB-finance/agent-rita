@@ -35,7 +35,7 @@ chatTitleRouter.post("/v1/generate/chat/title", async (c) => {
     userMessages.map((m, i) => `${i + 1}. ${m}`).join("\n");
 
   try {
-    const title = await singleShotLlm(prompt, { model });
+    const title = await singleShotLlm(prompt, { model, functionId: "generate.chat-title" });
     const cleaned = title.replace(/^["']|["']$/g, "");
     logger.info("chat/title generated", { title: cleaned });
     return c.json(cleaned);

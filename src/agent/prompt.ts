@@ -117,29 +117,49 @@ const CODE_EXECUTION_UNAVAILABLE_PROMPT =
   "PYTHON CODE EXECUTION:\n" +
   "- execute_code is not available this turn. Do not call it; use execute_sql, peek_table, peek_column_values, and create_artifact instead.\n";
 
-const SUGGESTIONS_PROMPT =
-  "FOLLOW-UP SUGGESTIONS:\n" +
-  "At the end of every response, generate 2-3 short follow-up questions the user might want to ask next. " +
+const SUGGESTIONS_RULES =
+  "Write each one as the USER's next message to you — an instruction or question in their voice " +
+  "(\"Compare the other two events\"), never in yours (\"Would you like me to...\"). " +
+  "Base them on the answer you just wrote: they continue this conversation, they do not restart it. " +
+  "In priority order:\n" +
+  "1. If your answer ended by asking the user anything, the suggestions ARE the answers to it. " +
+  "This outranks every other rule. Assume the user says yes — never suggest declining or deferring.\n" +
+  "   - Offered to DO something (\"Would you like me to check X?\") → the FIRST suggestion accepts it, " +
+  "reusing your own words for the action: \"Check X\". Never swap the offer for a different request, and never " +
+  "phrase it as if the data is already confirmed to exist.\n" +
+  "   - Also listed choices → the remaining suggestions take one choice each, in the order you listed them.\n" +
+  "   - Asked several things at once → answer the outermost question first, then the narrower ones.\n" +
+  "2. If your answer was blocked or incomplete (data not loaded, ticker ambiguous, a selection needed), the first " +
+  "suggestion is the exact action that unblocks it.\n" +
+  "3. Otherwise, suggest the natural next step deeper into what you just showed.\n" +
+  "Never suggest something you already did in this response, and never repeat a message the user has already sent. " +
   "CRITICAL: suggestions MUST be answerable using the widgets and data sources listed above (added to context, on the dashboard, or connected). " +
   "Never suggest questions that require data you don't have access to. " +
-  "If the user has Financial Statements and Company News widgets, suggest questions about those — not about unrelated topics. " +
-  "For the first message or when no widgets are available, suggest general questions about what data the user has connected or how you can help explore their workspace. " +
-  "Wrap them in a <suggestions> block:\n" +
-  "<suggestions>\n<suggestion>Summarize the data in my dashboard widgets</suggestion>\n" +
-  "<suggestion>What data sources do I have connected?</suggestion>\n</suggestions>\n" +
-  "Keep each suggestion under 80 characters. Always include the suggestions block, even for short answers.\n";
+  "For the first message, or when no widgets are available, suggest general questions about what data the user has " +
+  "connected or how you can help explore their workspace. " +
+  "Keep each suggestion under 80 characters.\n";
+
+const SUGGESTIONS_PROMPT =
+  "FOLLOW-UP SUGGESTIONS:\n" +
+  "End every response with 2-3 short follow-up questions the user might want to ask next. " +
+  SUGGESTIONS_RULES +
+  "Wrap them in a <suggestions> block. For example, if your answer ended with \"Would you like me to check the " +
+  "Insider Trading widget for executive holdings? If so, do you want institutional or insider holdings?\", " +
+  "the block is:\n" +
+  "<suggestions>\n<suggestion>Check the Insider Trading widget for executive holdings</suggestion>\n" +
+  "<suggestion>Use insider (named executive) holdings</suggestion>\n" +
+  "<suggestion>Use institutional holdings instead</suggestion>\n</suggestions>\n" +
+  "Always include the suggestions block, even for short answers.\n";
 
 // SPIKE variant (suggestionsVia: "tool"). Same guidance, but routes suggestions
 // through the suggest_followups tool instead of an inline block — used only to
 // measure real-model tool-call reliability vs. the trained inline default.
 const SUGGESTIONS_TOOL_PROMPT =
   "FOLLOW-UP SUGGESTIONS:\n" +
-  "At the end of every response, call the suggest_followups tool with 2-3 short follow-up questions the user might want to ask next. " +
-  "CRITICAL: suggestions MUST be answerable using the widgets and data sources listed above (added to context, on the dashboard, or connected). " +
-  "Never suggest questions that require data you don't have access to. " +
-  "If the user has Financial Statements and Company News widgets, suggest questions about those — not about unrelated topics. " +
-  "For the first message or when no widgets are available, suggest general questions about what data the user has connected or how you can help explore their workspace. " +
-  "Keep each suggestion under 80 characters. Always call suggest_followups, even for short answers — do not write the suggestions as plain text.\n";
+  "At the end of every response, call the suggest_followups tool with 2-3 short follow-up questions the user might " +
+  "want to ask next. " +
+  SUGGESTIONS_RULES +
+  "Always call suggest_followups, even for short answers — do not write the suggestions as plain text.\n";
 
 function describeParam(p: WidgetParam): string {
   const value = p.current_value ?? p.default_value;
@@ -272,29 +292,57 @@ function describeSkillsCatalog(catalog: SkillCatalogEntry[]): string {
   );
 }
 
-function formatCurrentDate(now: Date, timezone?: string): string {
-  const opts: Intl.DateTimeFormatOptions = {
+const FALLBACK_TIMEZONE = "UTC";
+
+/**
+ * The IANA zone the date section will actually use, falling back to UTC for a
+ * missing OR unparseable value.
+ *
+ * Resolved once and used for BOTH the formatted date and the "User timezone"
+ * line. Printing a zone that `Intl` rejected would tell the model the date was
+ * rendered somewhere it was not.
+ *
+ * The input reaches here from `extra_state` on a re-POST, so it is untrusted
+ * browser-echoed data — same posture as `parseTraceparent`: never throw.
+ */
+export function resolveTimezone(timezone: string | undefined): string {
+  if (!timezone) return FALLBACK_TIMEZONE;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: timezone });
+    return timezone;
+  } catch {
+    return FALLBACK_TIMEZONE;
+  }
+}
+
+function formatCurrentDate(now: Date, timezone: string): string {
+  return new Intl.DateTimeFormat("en-US", {
     weekday: "long",
     year: "numeric",
     month: "long",
     day: "numeric",
-  };
-  try {
-    return new Intl.DateTimeFormat("en-US", { ...opts, timeZone: timezone || "UTC" }).format(now);
-  } catch {
-    // Invalid IANA timezone string from the client — fall back to UTC.
-    return new Intl.DateTimeFormat("en-US", { ...opts, timeZone: "UTC" }).format(now);
-  }
+    timeZone: timezone,
+  }).format(now);
 }
 
-// Date-only (no time-of-day) so the cached system-prompt prefix is stable within a conversation-day.
-function buildDateSection(request: QueryRequest): string {
-  let section =
-    `CURRENT DATE: ${formatCurrentDate(new Date(), request.timezone)}. This is today — it is authoritative. ` +
+// Date-only (no time-of-day) so the cached system-prompt prefix is stable
+// within a conversation-day.
+//
+// The timezone line is UNCONDITIONAL. It used to be appended only when the
+// request carried a timezone, and the Workspace does not echo `timezone` on a
+// round-trip re-POST — so the system prompt grew a 32-byte tail on fresh POSTs
+// and lost it on reboot POSTs, alternating between two prefixes and splitting
+// the prompt cache in two (measured 2026-08-19: 21960 vs 21928 bytes,
+// identical for the first 99.9%). The loop now carries the zone forward
+// through extra_state; emitting the line either way keeps the section's SHAPE
+// fixed even on the requests where the value is genuinely unknown.
+function buildDateSection(timezone: string): string {
+  return (
+    `CURRENT DATE: ${formatCurrentDate(new Date(), timezone)}. This is today — it is authoritative. ` +
     "Your training data ends earlier, so for anything time-sensitive (recent events, news, \"latest\"/\"current\"/\"this year\", or date math) rely on this date rather than your training assumptions. " +
-    "When you call web_search for recent information, use the year shown here.";
-  if (request.timezone) section += `\nUser timezone: ${request.timezone}`;
-  return section;
+    "When you call web_search for recent information, use the year shown here." +
+    `\nUser timezone: ${timezone}`
+  );
 }
 
 export interface PromptOptions {
@@ -310,6 +358,12 @@ export interface PromptOptions {
   codeExecutionAvailable?: boolean;
   /** Registered MCP tools from makeMcpTools — the only source the prompt may advertise. */
   mcpToolEntries?: McpToolEntry[];
+  /**
+   * Timezone for the date section, carried across the turn's re-POSTs by the
+   * loop. Takes precedence over `request.timezone`, which the Workspace only
+   * sends on the first POST.
+   */
+  timezone?: string;
 }
 
 export function buildSystemPrompt(
@@ -369,7 +423,7 @@ export function buildSystemPrompt(
     sections.push(options.suggestionsVia === "tool" ? SUGGESTIONS_TOOL_PROMPT : SUGGESTIONS_PROMPT);
   }
 
-  sections.push(buildDateSection(request));
+  sections.push(buildDateSection(resolveTimezone(options?.timezone ?? request.timezone)));
 
   return sections.join("\n");
 }

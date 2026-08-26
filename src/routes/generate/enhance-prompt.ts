@@ -64,7 +64,7 @@ enhancePromptRouter.post("/v1/enhance_prompt", async (c) => {
     `\n\nOriginal query: ${lastHuman.content}`;
 
   try {
-    const enhanced = await singleShotLlm(prompt, { model });
+    const enhanced = await singleShotLlm(prompt, { model, functionId: "generate.enhance-prompt" });
     const cleaned = enhanced.replace(/^["']|["']$/g, "");
     logger.info("enhance_prompt done", { original: truncate(lastHuman.content, 100), enhanced: truncate(cleaned, 100) });
     return c.text(cleaned);

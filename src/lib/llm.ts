@@ -1,5 +1,6 @@
 import { generateText } from "ai";
 import { PROVIDER_OPTIONS, resolveModel } from "./providers";
+import { aiTelemetry } from "./telemetry";
 
 const DEFAULT_MODEL = "openai:gpt-4o-mini";
 // Backstop so a stalled provider can't hang a /generate route forever. Single
@@ -9,9 +10,17 @@ const DEFAULT_TIMEOUT_MS = 60_000;
 
 export async function singleShotLlm(
   prompt: string,
-  opts?: { model?: string; maxTokens?: number; temperature?: number; timeoutMs?: number },
+  opts?: {
+    model?: string;
+    maxTokens?: number;
+    temperature?: number;
+    timeoutMs?: number;
+    /** Groups this call's spans, e.g. "generate.chat-title". */
+    functionId?: string;
+  },
 ): Promise<string> {
-  const model = resolveModel(opts?.model ?? DEFAULT_MODEL);
+  const modelId = opts?.model ?? DEFAULT_MODEL;
+  const model = resolveModel(modelId);
   const result = await generateText({
     model,
     messages: [{ role: "user", content: prompt }],
@@ -19,6 +28,9 @@ export async function singleShotLlm(
     maxOutputTokens: opts?.maxTokens ?? 1024,
     providerOptions: PROVIDER_OPTIONS,
     abortSignal: AbortSignal.timeout(opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+    experimental_telemetry: aiTelemetry(opts?.functionId ?? "single-shot", {
+      model: modelId,
+    }),
   });
   return result.text.trim();
 }
