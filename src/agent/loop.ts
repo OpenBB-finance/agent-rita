@@ -1400,7 +1400,7 @@ export async function* runAgentLoop(options: AgentRunOptions): AsyncGenerator<SS
 
       // --- MCP tool round-trip ---
       const mcpToolCall = mcpToolsResult
-        ? lastStep?.toolCalls.find((tc) => mcpToolNames!.has(tc.toolName))
+        ? lastStep?.toolCalls.find((tc) => tc.invalid !== true && mcpToolNames!.has(tc.toolName))
         : undefined;
 
       if (mcpToolCall) {
