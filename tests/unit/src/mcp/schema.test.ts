@@ -238,6 +238,16 @@ describe("buildToolInputSchema — array", () => {
     expect(() => s.parse({ xs: [1] })).toThrow();
   });
 
+  it("keeps minItems / maxItems", () => {
+    const s = buildToolInputSchema({
+      properties: { xs: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 2 } },
+      required: ["xs"],
+    });
+    expect(s.parse({ xs: ["a"] })).toEqual({ xs: ["a"] });
+    expect(() => s.parse({ xs: [] })).toThrow();
+    expect(() => s.parse({ xs: ["a", "b", "c"] })).toThrow();
+  });
+
   it("without items falls back to z.array(z.unknown())", () => {
     const s = buildToolInputSchema({
       properties: { xs: { type: "array" } },
@@ -278,6 +288,33 @@ describe("buildToolInputSchema — nested object", () => {
     });
     expect(s.parse({ panels: { P1: { top: 0 } } })).toEqual({ panels: { P1: { top: 0 } } });
     expect(() => s.parse({ panels: { P1: {} } })).toThrow();
+  });
+
+  it("a patternProperties map validates both keys and values", () => {
+    const s = buildToolInputSchema({
+      properties: {
+        panels: {
+          type: "object",
+          patternProperties: { "^P[1-8]$": { type: "object", properties: { top: { type: "number" } }, required: ["top"] } },
+          additionalProperties: false,
+        },
+      },
+      required: ["panels"],
+    });
+    expect(s.parse({ panels: { P1: { top: 0 } } })).toEqual({ panels: { P1: { top: 0 } } });
+    expect(() => s.parse({ panels: { P1: { height: "100%" } } })).toThrow();
+    expect(() => s.parse({ panels: { main: { top: 0 } } })).toThrow();
+  });
+
+  it("additionalProperties: false rejects unknown keys instead of stripping them", () => {
+    const s = buildToolInputSchema({
+      properties: {
+        style: { type: "object", properties: { width: { type: "number" } }, required: ["width"], additionalProperties: false },
+      },
+      required: ["style"],
+    });
+    expect(s.parse({ style: { width: 1 } })).toEqual({ style: { width: 1 } });
+    expect(() => s.parse({ style: { width: 1, color: "#fff" } })).toThrow();
   });
 
   it("without properties falls back to z.record(z.string(), z.unknown())", () => {

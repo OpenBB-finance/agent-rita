@@ -19,6 +19,9 @@ type JsonSchemaProp = Record<string, unknown> & {
   required?: string[];
   $ref?: string;
   additionalProperties?: boolean | JsonSchemaProp;
+  patternProperties?: Record<string, JsonSchemaProp>;
+  minItems?: number;
+  maxItems?: number;
   minLength?: number;
   maxLength?: number;
   pattern?: string;
@@ -126,11 +129,29 @@ function buildSingleTypeSchema(type: string, prop: JsonSchemaProp, defs: Defs, s
       return z.boolean();
     case "null":
       return z.null();
-    case "array":
-      return prop.items ? z.array(jsonSchemaToZod(prop.items, defs, seen)) : z.array(z.unknown());
+    case "array": {
+      let a = z.array(prop.items ? jsonSchemaToZod(prop.items, defs, seen) : z.unknown());
+      if (typeof prop.minItems === "number") a = a.min(prop.minItems);
+      if (typeof prop.maxItems === "number") a = a.max(prop.maxItems);
+      return a;
+    }
     case "object": {
       if (!prop.properties) {
-        // A map (e.g. panel id -> panel): its value schema is the part the model needs.
+        // A map (e.g. panel id -> panel): its key and value schemas are the
+        // parts the model needs, given by patternProperties or additionalProperties.
+        const patterns = Object.entries(prop.patternProperties ?? {});
+        if (patterns.length > 0) {
+          const values = patterns.map(([, v]) => v);
+          let key = z.string();
+          if (patterns.length === 1) {
+            try {
+              key = key.regex(new RegExp(patterns[0][0]));
+            } catch {
+              // Not an ECMA-262 pattern: leave it to the server to enforce.
+            }
+          }
+          return z.record(key, buildUnion(values, undefined, defs, seen));
+        }
         const values = prop.additionalProperties;
         return z.record(
           z.string(),
@@ -144,7 +165,9 @@ function buildSingleTypeSchema(type: string, prop: JsonSchemaProp, defs: Defs, s
         if (!required.has(key)) s = s.optional();
         shape[key] = s;
       }
-      return z.object(shape);
+      // Servers that forbid extra keys reject them; z.object would silently
+      // accept them, so the model never learns why the call failed.
+      return prop.additionalProperties === false ? z.strictObject(shape) : z.object(shape);
     }
     default:
       return z.unknown();
