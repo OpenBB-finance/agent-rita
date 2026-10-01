@@ -15,6 +15,7 @@ import {
   llmCallsTool,
   llmEmitsText,
   makeMockLlm,
+  makeSequencedMockLlm,
 } from "../../helpers/mock-llm";
 import { collectGenerator } from "../../helpers/sse-reader";
 import { clearAllModuleState } from "../../helpers/clear-state";
@@ -142,5 +143,47 @@ describe("citations — forwarded across round-trips via extra_state.intermediat
     expect(cits).toBeDefined();
     const list = (cits!.data as { citations: Citation[] }).citations;
     expect(list.find((c) => c.id === "stable-id-1")).toBeDefined();
+  });
+});
+
+describe("MCP tool input rejected by schema — corrected in-turn, never forwarded", () => {
+  it("feeds the validation error back to the model and forwards only the valid retry", async () => {
+    const events = await collectGenerator(
+      runAgentLoop({
+        request: {
+          messages: [{ role: "human", content: "list chart sources" }],
+          tools: [
+            {
+              name: "list_chart_capabilities",
+              server_id: "charts",
+              url: "http://localhost:6910/charts/mcp",
+              description: "List sources",
+              input_schema: {
+                properties: { cursor: { anyOf: [{ type: "string", minLength: 1 }, { type: "null" }] } },
+                required: ["cursor"],
+              },
+            },
+          ],
+        } as unknown as QueryRequest,
+        rawModelId: "openai:gpt-4o-mini",
+        // First attempt violates minLength; the model sees the rejection and retries.
+        model: makeSequencedMockLlm([
+          llmCallsTool("list_chart_capabilities", { cursor: "" }),
+          llmCallsTool("list_chart_capabilities", { cursor: null }),
+        ]),
+        allWidgets: [],
+        workspaceState: null,
+        generativeUiEnabled: false,
+        conversationId: "invalid-mcp-1",
+      }),
+    );
+    const forwarded = events.filter(
+      (e) =>
+        e.event === "copilotFunctionCall" &&
+        (e.data as { function?: string }).function === "execute_agent_tool",
+    );
+    expect(forwarded).toHaveLength(1);
+    const args = (forwarded[0].data as { input_arguments: { parameters: Record<string, unknown> } }).input_arguments;
+    expect(args.parameters).toEqual({ cursor: null });
   });
 });

@@ -118,18 +118,113 @@ describe("buildToolInputSchema — primitive types", () => {
     expect(() => s.parse({ b: "true" })).toThrow();
   });
 
-  // type:"null" is a quirk in schema.ts: the null filter empties nonNullTypes,
-  // so the base schema becomes z.unknown() and `.nullable()` adds nothing.
-  // Accepts null AND anything else. The dead `case "null"` in
-  // buildSingleTypeSchema is never reached. Tracked for follow-up; for now
-  // pin the current behavior so a future fix breaks this test on purpose.
-  it("null type currently behaves as z.unknown().nullable() — known quirk", () => {
+  it("null type accepts only null", () => {
     const s = buildToolInputSchema({
       properties: { n: { type: "null" } },
       required: ["n"],
     });
     expect(s.parse({ n: null })).toEqual({ n: null });
-    expect(s.parse({ n: 0 })).toEqual({ n: 0 });
+    expect(() => s.parse({ n: 0 })).toThrow();
+  });
+
+  it("keeps string length and pattern constraints", () => {
+    const s = buildToolInputSchema({
+      properties: { k: { type: "string", minLength: 1, maxLength: 4, pattern: "^[a-z]+$" } },
+      required: ["k"],
+    });
+    expect(s.parse({ k: "ab" })).toEqual({ k: "ab" });
+    expect(() => s.parse({ k: "" })).toThrow();
+    expect(() => s.parse({ k: "abcde" })).toThrow();
+    expect(() => s.parse({ k: "AB" })).toThrow();
+  });
+
+  it("keeps integer and numeric bounds", () => {
+    const s = buildToolInputSchema({
+      properties: { i: { type: "integer", minimum: 1, maximum: 10 } },
+      required: ["i"],
+    });
+    expect(s.parse({ i: 3 })).toEqual({ i: 3 });
+    expect(() => s.parse({ i: 1.5 })).toThrow();
+    expect(() => s.parse({ i: 0 })).toThrow();
+    expect(() => s.parse({ i: 11 })).toThrow();
+  });
+
+  it("a nullable non-empty string rejects the empty string", () => {
+    const s = buildToolInputSchema({
+      properties: { cursor: { anyOf: [{ type: "string", minLength: 1 }, { type: "null" }] } },
+      required: ["cursor"],
+    });
+    expect(s.parse({ cursor: null })).toEqual({ cursor: null });
+    expect(s.parse({ cursor: "c1" })).toEqual({ cursor: "c1" });
+    expect(() => s.parse({ cursor: "" })).toThrow();
+  });
+});
+
+describe("buildToolInputSchema — $ref", () => {
+  // The shape pydantic / FastMCP emit: object params live in $defs.
+  const schema = {
+    properties: {
+      definition: { $ref: "#/$defs/Definition" },
+      target: { $ref: "#/$defs/Target" },
+    },
+    required: ["definition", "target"],
+    $defs: {
+      Definition: {
+        type: "object",
+        properties: { title: { type: "string" }, data: { $ref: "#/$defs/Data" } },
+        required: ["title", "data"],
+      },
+      Data: {
+        type: "object",
+        properties: { symbol: { type: "string" }, interval: { enum: ["1m", "5m"] } },
+        required: ["symbol", "interval"],
+      },
+      Target: {
+        oneOf: [
+          { type: "object", properties: { mode: { const: "headless" } }, required: ["mode"] },
+          { type: "object", properties: { mode: { const: "workspace" }, id: { type: "string" } }, required: ["mode", "id"] },
+        ],
+      },
+    },
+  };
+
+  it("resolves $ref against $defs, including nested refs", () => {
+    const s = buildToolInputSchema(schema);
+    const ok = {
+      definition: { title: "t", data: { symbol: "AAPL.US", interval: "5m" } },
+      target: { mode: "headless" },
+    };
+    expect(s.parse(ok)).toEqual(ok);
+    expect(() => s.parse({ ...ok, definition: JSON.stringify(ok.definition) })).toThrow();
+    expect(() => s.parse({ ...ok, definition: { title: "t", data: { symbol: "AAPL.US", interval: "2m" } } })).toThrow();
+    expect(() => s.parse({ ...ok, target: { mode: "nowhere" } })).toThrow();
+  });
+
+  it("shows the model the referenced structure, not an empty schema", () => {
+    const json = z.toJSONSchema(buildToolInputSchema(schema)) as {
+      properties: Record<string, { type?: string; properties?: Record<string, unknown> }>;
+    };
+    expect(json.properties.definition.type).toBe("object");
+    expect(Object.keys(json.properties.definition.properties ?? {}).sort()).toEqual(["data", "title"]);
+  });
+
+  it("a recursive $ref terminates instead of looping", () => {
+    const s = buildToolInputSchema({
+      properties: { node: { $ref: "#/$defs/Node" } },
+      required: ["node"],
+      $defs: {
+        Node: { type: "object", properties: { next: { $ref: "#/$defs/Node" } } },
+      },
+    });
+    expect(s.parse({ node: { next: { next: {} } } })).toEqual({ node: { next: { next: {} } } });
+  });
+
+  it("an unresolvable $ref falls back to z.unknown()", () => {
+    const s = buildToolInputSchema({
+      properties: { v: { $ref: "#/$defs/Missing" } },
+      required: ["v"],
+    });
+    expect(s.parse({ v: 1 })).toEqual({ v: 1 });
   });
 });
 
@@ -141,6 +236,16 @@ describe("buildToolInputSchema — array", () => {
     });
     expect(s.parse({ xs: ["a", "b"] })).toEqual({ xs: ["a", "b"] });
     expect(() => s.parse({ xs: [1] })).toThrow();
+  });
+
+  it("keeps minItems / maxItems", () => {
+    const s = buildToolInputSchema({
+      properties: { xs: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 2 } },
+      required: ["xs"],
+    });
+    expect(s.parse({ xs: ["a"] })).toEqual({ xs: ["a"] });
+    expect(() => s.parse({ xs: [] })).toThrow();
+    expect(() => s.parse({ xs: ["a", "b", "c"] })).toThrow();
   });
 
   it("without items falls back to z.array(z.unknown())", () => {
@@ -169,6 +274,47 @@ describe("buildToolInputSchema — nested object", () => {
     });
     expect(s.parse({ person: { name: "alice" } })).toEqual({ person: { name: "alice" } });
     expect(() => s.parse({ person: {} })).toThrow();
+  });
+
+  it("a map with an additionalProperties schema validates each value", () => {
+    const s = buildToolInputSchema({
+      properties: {
+        panels: {
+          type: "object",
+          additionalProperties: { type: "object", properties: { top: { type: "number" } }, required: ["top"] },
+        },
+      },
+      required: ["panels"],
+    });
+    expect(s.parse({ panels: { P1: { top: 0 } } })).toEqual({ panels: { P1: { top: 0 } } });
+    expect(() => s.parse({ panels: { P1: {} } })).toThrow();
+  });
+
+  it("a patternProperties map validates both keys and values", () => {
+    const s = buildToolInputSchema({
+      properties: {
+        panels: {
+          type: "object",
+          patternProperties: { "^P[1-8]$": { type: "object", properties: { top: { type: "number" } }, required: ["top"] } },
+          additionalProperties: false,
+        },
+      },
+      required: ["panels"],
+    });
+    expect(s.parse({ panels: { P1: { top: 0 } } })).toEqual({ panels: { P1: { top: 0 } } });
+    expect(() => s.parse({ panels: { P1: { height: "100%" } } })).toThrow();
+    expect(() => s.parse({ panels: { main: { top: 0 } } })).toThrow();
+  });
+
+  it("additionalProperties: false rejects unknown keys instead of stripping them", () => {
+    const s = buildToolInputSchema({
+      properties: {
+        style: { type: "object", properties: { width: { type: "number" } }, required: ["width"], additionalProperties: false },
+      },
+      required: ["style"],
+    });
+    expect(s.parse({ style: { width: 1 } })).toEqual({ style: { width: 1 } });
+    expect(() => s.parse({ style: { width: 1, color: "#fff" } })).toThrow();
   });
 
   it("without properties falls back to z.record(z.string(), z.unknown())", () => {

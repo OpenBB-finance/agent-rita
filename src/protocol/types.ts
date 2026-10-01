@@ -64,6 +64,9 @@ export interface AgentTool {
   input_schema?: {
     properties?: Record<string, Record<string, unknown>>;
     required?: string[];
+    /** Named definitions the properties' `$ref`s point into (draft-07 calls them `definitions`). */
+    $defs?: Record<string, Record<string, unknown>>;
+    definitions?: Record<string, Record<string, unknown>>;
   };
 }
 

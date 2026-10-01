@@ -84,7 +84,10 @@ export function makeMcpTools(agentTools: AgentTool[]): McpToolsResult {
   const stopCondition: StopCondition<ToolSet> = ({ steps }) => {
     const lastStep = steps.at(-1);
     if (!lastStep) return false;
-    return lastStep.toolCalls.some((tc) => mcpToolNames.has(tc.toolName));
+    // A schema-rejected call must not end the step: the SDK hands its
+    // validation error back to the model, which retries within this turn
+    // instead of spending a client round-trip on input the server refuses.
+    return lastStep.toolCalls.some((tc) => tc.invalid !== true && mcpToolNames.has(tc.toolName));
   };
 
   return {
